@@ -859,6 +859,7 @@
               <input type="number" id="newUserBalance" class="input-field" placeholder="Initial Balance (USD)" step="0.01" value="1000">
             </div>
             <button class="btn-primary mt-3" id="createUserBtn">Create User</button>
+            <p id="createUserError" class="text-red-600 text-sm mt-2 hidden"></p>
           </div>
         </div>
 
@@ -973,18 +974,28 @@
         };
       });
 
-      // Create user
+      // Create user (with error handling)
       document.getElementById('createUserBtn').onclick = async () => {
         const name = document.getElementById('newUserName').value.trim();
         const email = document.getElementById('newUserEmail').value.trim();
         const password = document.getElementById('newUserPassword').value;
         const phone = document.getElementById('newUserPhone').value.trim();
         const balance = parseFloat(document.getElementById('newUserBalance').value);
+        const errorP = document.getElementById('createUserError');
+        errorP.classList.add('hidden');
+
         if (!name || !email || !password) { alert('All fields required.'); return; }
         if (isNaN(balance) || balance < 0) { alert('Invalid balance.'); return; }
-        await api('/api/admin/create-user', 'POST', { name, email, password, phone, balance });
-        renderApp();
-        showToast('User created!');
+
+        try {
+          await api('/api/admin/create-user', 'POST', { name, email, password, phone, balance });
+          showToast('User created!');
+          // Refresh the admin panel
+          renderApp();
+        } catch (e) {
+          errorP.textContent = 'Error: ' + e.message;
+          errorP.classList.remove('hidden');
+        }
       };
 
       // Update balance
@@ -999,7 +1010,7 @@
         };
       });
 
-      // Add transaction (not fully implemented in backend, but keeps UI)
+      // Add transaction (not fully implemented, but kept for UI)
       document.getElementById('addTxBtn').onclick = async () => {
         const name = document.getElementById('newTxName').value.trim();
         const dateTime = document.getElementById('newTxDate').value.trim();
@@ -1008,7 +1019,7 @@
         const status = document.getElementById('newTxStatus').value;
         const amount = parseFloat(document.getElementById('newTxAmt').value);
         if (!name || !dateTime || isNaN(amount) || amount <= 0) { alert('Fill all fields'); return; }
-        // Simulate: could call an admin-add-transaction endpoint
+        // This endpoint not yet built; we can simulate
         showToast('Add transaction via admin not fully implemented.');
       };
 
