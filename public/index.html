@@ -87,15 +87,15 @@
 
   <script>
     // ==================== Global State ====================
-    let currentUser = null;        // user object from server
+    let currentUser = null;
     let balanceVisible = true;
     let activeModal = null;
     let isAdminLoginMode = false;
-    let currentView = 'dashboard'; // 'dashboard' or 'profile'
+    let currentView = 'dashboard';
     let supportEmail = 'support@vaultbank.com';
     let supportPhone = '1-800-555-0199';
 
-    // ==================== Helpers ====================
+    // Helpers
     function formatUSD(amount) { return '$' + Number(amount).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
     function formatDate(isoStr) {
       try {
@@ -129,7 +129,7 @@
       setTimeout(() => toast.remove(), 2500);
     }
 
-    // ==================== API Functions ====================
+    // API
     async function api(url, method = 'GET', body = null) {
       const opts = { method, headers: { 'Content-Type': 'application/json' } };
       if (body) opts.body = JSON.stringify(body);
@@ -143,7 +143,6 @@
       const data = await api('/api/user');
       if (data.isAdmin) return null;
       currentUser = data;
-      // also fetch bank info
       try {
         const info = await api('/api/bankinfo');
         supportEmail = info.supportEmail;
@@ -152,7 +151,7 @@
       return data;
     }
 
-    // ==================== Modal System ====================
+    // Modal system
     function openModal(title, bodyHTML, onSave = null, saveLabel = 'Confirm', size = '') {
       const modalContainer = document.getElementById('modalContainer');
       const maxW = size === 'large' ? 'max-w-2xl' : 'max-w-md';
@@ -188,26 +187,24 @@
       document.body.style.overflow = '';
     }
 
-    // ==================== PIN Prompt Helper ====================
-    function promptTransactionPIN(amount, description, type, extra = {}) {
+    // PIN prompt (shared)
+    function promptTransactionPIN(amount, description, type, extra) {
       const bodyHTML = `
         <div class="space-y-3">
           <p class="text-sm text-gray-600 dark:text-gray-300">Enter your 4‑digit transaction PIN to proceed.</p>
           <input type="password" id="pinInput" class="input-field text-center text-lg tracking-widest" maxlength="4" placeholder="****" autofocus>
           <p id="pinError" class="text-red-600 text-sm hidden text-center"></p>
         </div>`;
-
       openModal('🔐 Transaction PIN', bodyHTML, () => false, 'Confirm');
 
       document.getElementById('modalSaveBtn').onclick = async () => {
         const pin = document.getElementById('pinInput').value;
         try {
           if (type === 'transfer') {
-            await api('/api/transfer', 'POST', { toEmail: extra.toEmail || extra.recipient, amount, pin });
+            await api('/api/transfer', 'POST', { toEmail: extra.toEmail, amount, pin, external: extra.external || false, externalDetails: extra.externalDetails });
           } else if (type === 'billpay') {
             await api('/api/billpay', 'POST', { payee: extra.payee, amount, pin });
           }
-          // Success: show spinner then success
           document.getElementById('modalBody').innerHTML = `
             <div class="text-center py-4">
               <div class="spinner"></div>
@@ -215,7 +212,7 @@
             </div>`;
           document.getElementById('modalFooter')?.classList.add('hidden');
 
-          await new Promise(r => setTimeout(r, 3000)); // simulate delay
+          await new Promise(r => setTimeout(r, 3000));
 
           document.getElementById('modalBody').innerHTML = `
             <div class="text-center py-4">
@@ -223,7 +220,7 @@
               <p class="text-gray-700 dark:text-gray-300">${description}: ${formatUSD(amount)}</p>
               <button class="btn-primary mt-4 text-sm" onclick="closeModal()">Close</button>
             </div>`;
-          await fetchUser(); // refresh balance
+          await fetchUser();
           renderApp();
         } catch (err) {
           if (err.message === 'Incorrect Transaction PIN') {
@@ -243,8 +240,8 @@
       };
     }
 
-    // ==================== Render App ====================
-    async function renderApp() {
+    // Render
+    function renderApp() {
       const app = document.getElementById('app');
       if (currentUser && currentUser.darkMode) {
         document.documentElement.classList.add('dark');
@@ -255,8 +252,8 @@
         app.innerHTML = renderLoginPage();
         attachLoginListeners();
       } else if (currentUser.isAdmin) {
-        app.innerHTML = await renderAdminPanel();
-        attachAdminListeners();
+        app.innerHTML = renderAdminPanel();
+        // admin listeners attached inside
       } else {
         if (currentView === 'profile') {
           app.innerHTML = renderProfilePage();
@@ -268,7 +265,7 @@
       }
     }
 
-    // ==================== Login Page ====================
+    // ==================== LOGIN PAGE ====================
     function renderLoginPage() {
       const adminHint = isAdminLoginMode ? '<span class="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded-full font-semibold ml-2">Admin Mode</span>' : '';
       return `
@@ -326,7 +323,7 @@
       };
     }
 
-    // ==================== User Dashboard ====================
+    // ==================== USER DASHBOARD ====================
     function renderUserDashboard() {
       if (!currentUser) return '';
       const displayAvail = balanceVisible ? formatUSD(currentUser.availableBalance) : maskAmount(currentUser.availableBalance);
@@ -388,13 +385,7 @@
           </div>
           <div class="overflow-x-auto">
             <table class="w-full text-sm">
-              <thead>
-                <tr class="text-xs text-gray-400 uppercase border-b dark:border-gray-600">
-                  <th class="py-3 text-left">Transaction</th>
-                  <th class="py-3 text-center">Status</th>
-                  <th class="py-3 text-right">Amount</th>
-                </tr>
-              </thead>
+              <thead><tr class="text-xs text-gray-400 uppercase border-b dark:border-gray-600"><th class="py-3 text-left">Transaction</th><th class="py-3 text-center">Status</th><th class="py-3 text-right">Amount</th></tr></thead>
               <tbody>${txRows || '<tr><td colspan="3" class="py-8 text-center text-gray-500">No transactions</td></tr>'}</tbody>
             </table>
           </div>
@@ -404,9 +395,7 @@
 
     function attachDashboardListeners() {
       document.getElementById('toggleBalanceBtn').onclick = () => { balanceVisible = !balanceVisible; renderApp(); };
-      document.querySelectorAll('[data-action]').forEach(btn => {
-        btn.onclick = () => handleDashboardAction(btn.dataset.action);
-      });
+      document.querySelectorAll('[data-action]').forEach(btn => btn.onclick = () => handleDashboardAction(btn.dataset.action));
     }
 
     function handleDashboardAction(action) {
@@ -415,50 +404,49 @@
         case 'deposit': openDepositModal(); break;
         case 'payBills': openPayBillsModal(); break;
         case 'toggleCard': toggleCardLock(); break;
-        case 'statements':
-        case 'allTransactions': showAllTransactions(); break;
+        case 'statements': case 'allTransactions': showAllTransactions(); break;
       }
     }
 
-    // ==================== Transfer & Send Modal ====================
+    // ---------- Transfer & Send Modal (redesigned) ----------
     function openTransferSendModal() {
       let activeTab = 'internal';
       const bodyHTML = `
         <div class="flex gap-2 mb-4 flex-wrap">
-          <button class="tab-btn active" data-tab="internal">🔄 Internal Transfer</button>
-          <button class="tab-btn" data-tab="external">🏦 External Bank</button>
-          <button class="tab-btn" data-tab="zelle">⚡ Zelle / P2P</button>
+          <button class="tab-btn active" data-tab="internal">🔄 Internal</button>
+          <button class="tab-btn" data-tab="external">🏦 External</button>
+          <button class="tab-btn" data-tab="zelle">⚡ Zelle/P2P</button>
         </div>
         <div id="transferTabContent">
           <div id="tabInternal" class="space-y-3">
-            <p class="text-sm text-gray-600 dark:text-gray-300">Transfer between your own accounts</p>
-            <select class="input-field"><option>Checking ••••${currentUser.cardLastFour} - ${formatUSD(currentUser.availableBalance)}</option><option>Savings ••••8901 - $5,200.00</option></select>
-            <select class="input-field"><option>Savings ••••8901 - $5,200.00</option><option>Checking ••••${currentUser.cardLastFour} - ${formatUSD(currentUser.availableBalance)}</option></select>
-            <input type="number" id="internalAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
-            <p class="text-xs text-gray-500 dark:text-gray-400">Available: ${formatUSD(currentUser.availableBalance)}</p>
+            <p class="text-sm text-gray-600 dark:text-gray-300">Transfer to another Vault Bank user</p>
+            <input type="text" id="intRecipientEmail" class="input-field" placeholder="Recipient Email">
+            <input type="number" id="intAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
+            <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
           </div>
           <div id="tabExternal" class="space-y-3 hidden">
             <p class="text-sm text-gray-600 dark:text-gray-300">Send to an external bank account</p>
-            <input type="text" id="extRecipient" class="input-field" placeholder="Recipient Email">
+            <input type="text" id="extFullName" class="input-field" placeholder="Recipient Full Name">
+            <input type="text" id="extBankName" class="input-field" placeholder="Bank Name">
+            <input type="text" id="extAccountNum" class="input-field" placeholder="Account Number">
+            <input type="text" id="extRoutingNum" class="input-field" placeholder="Routing Number">
             <input type="number" id="extAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
+            <input type="text" id="extMemo" class="input-field" placeholder="Memo (optional)">
+            <select id="extType" class="input-field"><option value="ACH">ACH</option><option value="Wire">Wire</option></select>
+            <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
           </div>
           <div id="tabZelle" class="space-y-3 hidden">
-            <p class="text-sm text-gray-600 dark:text-gray-300">Send money instantly via email or phone</p>
-            <input type="text" id="zelleRecipient" class="input-field" placeholder="Recipient Email or Phone">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Send via email or phone (must be registered user)</p>
+            <input type="text" id="zelleRecipient" class="input-field" placeholder="Email or Phone">
             <input type="number" id="zelleAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
-            <p class="text-xs text-gray-500 dark:text-gray-400">Available: ${formatUSD(currentUser.availableBalance)}</p>
+            <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
           </div>
         </div>`;
-
       openModal('💸 Transfer & Send Money', bodyHTML, () => false, 'Send Now', 'large');
 
       setTimeout(() => {
         const tabs = document.querySelectorAll('.tab-btn');
-        const tabContents = {
-          internal: document.getElementById('tabInternal'),
-          external: document.getElementById('tabExternal'),
-          zelle: document.getElementById('tabZelle')
-        };
+        const tabContents = { internal: document.getElementById('tabInternal'), external: document.getElementById('tabExternal'), zelle: document.getElementById('tabZelle') };
         tabs.forEach(btn => {
           btn.onclick = () => {
             activeTab = btn.dataset.tab;
@@ -470,32 +458,57 @@
         });
 
         document.getElementById('modalSaveBtn').onclick = () => {
-          let amount = 0, description = '', recipientEmail = '';
+          let amount = 0, description = '', extra = {};
           if (activeTab === 'internal') {
-            amount = parseFloat(document.getElementById('internalAmount').value);
-            description = 'Internal Transfer';
-            recipientEmail = currentUser.email; // internal, but we just send to same? We'll skip PIN for internal? For simplicity, treat as external to another user. We'll ask for recipient email in external. For internal, we'll just ask email of other user? Better to implement as a separate field. We'll keep internal as an example, but to make it work, we'll use the same logic as external. We'll prompt recipient email in all.
+            amount = parseFloat(document.getElementById('intAmount').value);
+            const email = document.getElementById('intRecipientEmail').value.trim();
+            if (!email) { alert('Enter recipient email.'); return; }
+            if (email === currentUser.email) { alert('Cannot transfer to yourself.'); return; }
+            extra.toEmail = email;
+            description = `Transfer to ${email}`;
+            extra.external = false;
           } else if (activeTab === 'external') {
-            recipientEmail = document.getElementById('extRecipient').value.trim();
             amount = parseFloat(document.getElementById('extAmount').value);
-            if (!recipientEmail) { alert('Enter recipient email.'); return; }
-            description = `External Transfer to ${recipientEmail}`;
-          } else {
-            recipientEmail = document.getElementById('zelleRecipient').value.trim();
+            const fullName = document.getElementById('extFullName').value.trim();
+            const bankName = document.getElementById('extBankName').value.trim();
+            const acctNum = document.getElementById('extAccountNum').value.trim();
+            const routNum = document.getElementById('extRoutingNum').value.trim();
+            if (!fullName || !bankName || !acctNum || !routNum) { alert('Fill all required fields.'); return; }
+            const memo = document.getElementById('extMemo').value.trim();
+            const type = document.getElementById('extType').value;
+            extra.external = true;
+            extra.externalDetails = { fullName, bankName, accountNumber: acctNum, routingNumber: routNum, memo, type };
+            description = `External Transfer to ${fullName}`;
+          } else if (activeTab === 'zelle') {
             amount = parseFloat(document.getElementById('zelleAmount').value);
-            if (!recipientEmail) { alert('Enter recipient email/phone.'); return; }
-            description = `Zelle Payment to ${recipientEmail}`;
+            const recipient = document.getElementById('zelleRecipient').value.trim();
+            if (!recipient) { alert('Enter email/phone.'); return; }
+            // Lookup user
+            api('/api/user/lookup?email=' + encodeURIComponent(recipient) + '&phone=' + encodeURIComponent(recipient))
+              .then(resp => {
+                extra.toEmail = resp.email;
+                description = `Zelle to ${recipient}`;
+                extra.external = false;
+                proceed();
+              })
+              .catch(() => {
+                alert('Recipient not found in Vault Bank.');
+              });
+            return;
           }
           if (isNaN(amount) || amount <= 0) { alert('Enter a valid amount.'); return; }
           if (amount > currentUser.availableBalance) { alert('Insufficient funds.'); return; }
+          proceed();
 
-          closeModal();
-          promptTransactionPIN(amount, description, 'transfer', { toEmail: recipientEmail || currentUser.email });
+          function proceed() {
+            closeModal();
+            promptTransactionPIN(amount, description, 'transfer', extra);
+          }
         };
       }, 100);
     }
 
-    // ==================== Deposit Modal ====================
+    // ---------- Deposit Modal (with camera) ----------
     function openDepositModal() {
       let activeTab = 'check';
       const bodyHTML = `
@@ -506,20 +519,23 @@
         </div>
         <div id="depositTabContent">
           <div id="tabCheck" class="space-y-3 text-center">
-            <div class="border-2 border-dashed border-gray-300 dark:border-gray-500 rounded-xl p-8 cursor-pointer hover:border-vault-blue transition-colors">
-              <span class="text-4xl">📷</span>
-              <p class="font-semibold mt-2 text-gray-900 dark:text-gray-200">Tap to Capture Check</p>
-              <p class="text-xs text-gray-500 dark:text-gray-400">Front & Back of endorsed check</p>
+            <p class="text-sm text-gray-600 dark:text-gray-300">Capture front and back of endorsed check</p>
+            <div id="cameraContainer" class="relative bg-black rounded-xl overflow-hidden" style="height:200px;">
+              <video id="checkVideo" autoplay playsinline class="w-full h-full object-cover hidden"></video>
+              <canvas id="checkCanvas" class="hidden"></canvas>
+              <div id="cameraPlaceholder" class="flex items-center justify-center h-full text-white text-lg">📷 Tap to open camera</div>
             </div>
+            <button id="captureCheckBtn" class="btn-primary btn-sm hidden">Capture</button>
+            <div id="checkPreview" class="flex gap-2 justify-center mt-2"></div>
             <input type="number" id="checkAmount" class="input-field" placeholder="Check Amount" step="0.01" min="0.01">
           </div>
           <div id="tabWire" class="space-y-3 hidden">
             <p class="text-sm text-gray-600 dark:text-gray-300">Provide these details to the sender for wire transfers</p>
             <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-xl space-y-2">
-              <div class="flex justify-between"><span class="text-xs text-gray-500 dark:text-gray-400">Account Holder</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.name}</span></div>
-              <div class="flex justify-between"><span class="text-xs text-gray-500 dark:text-gray-400">Account Number</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.accountNumber}</span></div>
-              <div class="flex justify-between"><span class="text-xs text-gray-500 dark:text-gray-400">Routing Number</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.routingNumber}</span></div>
-              <div class="flex justify-between"><span class="text-xs text-gray-500 dark:text-gray-400">Bank</span><span class="font-semibold text-gray-900 dark:text-gray-200">Vault Bank NA</span></div>
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Account Holder</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.name}</span></div>
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Account Number</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.accountNumber}</span></div>
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Routing Number</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.routingNumber}</span></div>
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Bank</span><span class="font-semibold text-gray-900 dark:text-gray-200">Vault Bank NA</span></div>
             </div>
             <input type="number" id="wireAmount" class="input-field" placeholder="Expected Amount" step="0.01" min="0.01">
           </div>
@@ -537,7 +553,6 @@
         else { amount = parseFloat(document.getElementById('debitAmount').value); source = 'Debit Card'; }
         if (isNaN(amount) || amount <= 0) { alert('Enter a valid amount.'); return false; }
 
-        // Call API
         api('/api/deposit', 'POST', { amount, source }).then(() => {
           fetchUser().then(() => {
             renderApp();
@@ -547,13 +562,10 @@
         return true;
       }, 'Confirm Deposit', 'large');
 
+      // Tab switching
       setTimeout(() => {
         const tabs = document.querySelectorAll('.tab-btn[data-tab]');
-        const tabContents = {
-          check: document.getElementById('tabCheck'),
-          wire: document.getElementById('tabWire'),
-          debit: document.getElementById('tabDebit')
-        };
+        const tabContents = { check: document.getElementById('tabCheck'), wire: document.getElementById('tabWire'), debit: document.getElementById('tabDebit') };
         tabs.forEach(btn => {
           btn.onclick = () => {
             activeTab = btn.dataset.tab;
@@ -563,10 +575,59 @@
             tabContents[activeTab].classList.remove('hidden');
           };
         });
+        // Camera setup for mobile check
+        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+          let stream = null;
+          const video = document.getElementById('checkVideo');
+          const canvas = document.getElementById('checkCanvas');
+          const placeholder = document.getElementById('cameraPlaceholder');
+          const captureBtn = document.getElementById('captureCheckBtn');
+          const previewDiv = document.getElementById('checkPreview');
+          let capturedImages = 0;
+
+          async function startCamera() {
+            try {
+              stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
+              video.srcObject = stream;
+              video.classList.remove('hidden');
+              placeholder.classList.add('hidden');
+              captureBtn.classList.remove('hidden');
+            } catch (err) {
+              showToast('Camera access denied. Use wire or debit deposit.');
+            }
+          }
+          function stopCamera() {
+            if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+            video.classList.add('hidden');
+            placeholder.classList.remove('hidden');
+            captureBtn.classList.add('hidden');
+          }
+
+          // Open camera on click
+          placeholder.onclick = startCamera;
+          video.onclick = startCamera;
+
+          captureBtn.onclick = () => {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+            canvas.getContext('2d').drawImage(video, 0, 0);
+            const imgData = canvas.toDataURL('image/png');
+            previewDiv.innerHTML += `<img src="${imgData}" class="h-16 rounded border"/>`;
+            capturedImages++;
+            if (capturedImages >= 2) {
+              stopCamera();
+              showToast('Both sides captured. Simulating verification...');
+              // Simulate verification and deposit later (the actual deposit happens on confirm)
+            }
+            if (capturedImages === 1) {
+              showToast('Now capture the back of the check.');
+            }
+          };
+        }
       }, 100);
     }
 
-    // ==================== Bill Pay Modal ====================
+    // ==================== BILL PAY (unchanged but functional) ====================
     function openPayBillsModal() {
       const billers = [
         { name: 'Electricity', icon: '⚡', desc: 'Power & Electric Bills', cat: 'Electricity' },
@@ -587,7 +648,7 @@
           <h4 class="font-semibold text-gray-900 dark:text-gray-200" id="billerFormTitle"></h4>
           <input type="text" id="billerAccountNum" class="input-field" placeholder="Account / Meter Number">
           <input type="number" id="billerAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
-          <p class="text-xs text-gray-500 dark:text-gray-400">Available: ${formatUSD(currentUser.availableBalance)}</p>
+          <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
           <button class="btn-primary w-full" id="payBillerBtn">Pay Now</button>
         </div>`;
       openModal('🧾 Pay Bills', bodyHTML, null, '', 'large');
@@ -615,7 +676,6 @@
       }, 100);
     }
 
-    // ==================== Card Lock Toggle ====================
     async function toggleCardLock() {
       await api('/api/card/lock', 'POST');
       await fetchUser();
@@ -629,7 +689,7 @@
       openModal('📋 All Transactions', `<div class="overflow-x-auto"><table class="w-full text-sm">${rows}</table></div>`);
     }
 
-    // ==================== Profile Page ====================
+    // ==================== PROFILE ====================
     function renderProfilePage() {
       const user = currentUser;
       const cardDisplay = user.showCardDigits ? user.cardFull.replace(/(\d{4})(?=\d)/g, '$1 ') : `•••• •••• •••• ${user.cardLastFour}`;
@@ -647,12 +707,12 @@
         <div class="card-premium p-4 sm:p-6">
           <h2 class="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">📋 Account Information</h2>
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div><span class="text-xs text-gray-500 dark:text-gray-400 uppercase">Full Name</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.name}</p></div>
-            <div><span class="text-xs text-gray-500 dark:text-gray-400 uppercase">Email</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.email}</p></div>
-            <div><span class="text-xs text-gray-500 dark:text-gray-400 uppercase">Phone</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.phone||'(555) 123-4567'}</p></div>
-            <div><span class="text-xs text-gray-500 dark:text-gray-400 uppercase">Account Number</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.accountNumber||'4827 9012 3456 7890'}</p></div>
-            <div><span class="text-xs text-gray-500 dark:text-gray-400 uppercase">Routing Number</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.routingNumber||'021000021'}</p></div>
-            <div><span class="text-xs text-gray-500 dark:text-gray-400 uppercase">Member Since</span><p class="font-semibold text-gray-900 dark:text-gray-200">January 2024</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Full Name</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.name}</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Email</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.email}</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Phone</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.phone||'(555) 123-4567'}</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Account Number</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.accountNumber}</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Routing Number</span><p class="font-semibold text-gray-900 dark:text-gray-200">${user.routingNumber}</p></div>
+            <div><span class="text-xs text-gray-500 uppercase">Member Since</span><p class="font-semibold text-gray-900 dark:text-gray-200">January 2024</p></div>
           </div>
         </div>
         <div class="card-premium p-4 sm:p-6">
@@ -763,11 +823,11 @@
       };
     }
 
-    // ==================== Navigation ====================
+    // Navigation
     function navigateToProfile() { currentView = 'profile'; renderApp(); }
     function navigateToDashboard() { currentView = 'dashboard'; renderApp(); }
 
-    // ==================== Admin Panel ====================
+    // ==================== ADMIN PANEL ====================
     async function renderAdminPanel() {
       let users = [];
       let transactions = [];
@@ -786,6 +846,7 @@
               <span class="text-xs text-gray-700 dark:text-gray-300">IRS:</span>
               <div class="toggle-switch ${u.irsHold ? 'active' : ''} admin-irs-toggle" data-uid="${u.id}"></div>
               ${u.approved ? (u.suspended ? '<button class="btn-sm bg-emerald-500 text-white admin-reactivate-btn" data-uid="'+u.id+'">Reactivate</button>' : '<button class="btn-sm btn-danger admin-suspend-btn" data-uid="'+u.id+'">Suspend</button>') : '<button class="btn-sm bg-emerald-500 text-white admin-approve-btn" data-uid="'+u.id+'">Approve</button>'}
+              <button class="btn-sm btn-outline admin-edit-user-btn" data-uid="${u.id}">✏️ Edit</button>
               <button class="btn-sm btn-outline text-red-600 border-red-300 admin-delete-btn" data-uid="${u.id}">Delete</button>
             </div>
           </td>
@@ -830,6 +891,7 @@
               <input type="text" id="newUserName" class="input-field" placeholder="Full Name">
               <input type="email" id="newUserEmail" class="input-field" placeholder="Email">
               <input type="password" id="newUserPassword" class="input-field" placeholder="Password">
+              <input type="text" id="newUserPhone" class="input-field" placeholder="Phone (optional)">
               <input type="number" id="newUserBalance" class="input-field" placeholder="Initial Balance (USD)" step="0.01" value="1000">
             </div>
             <button class="btn-primary mt-3" id="createUserBtn">Create User</button>
@@ -844,7 +906,7 @@
         </div>
 
         <div class="card-premium p-4 sm:p-6">
-          <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">➕ Add Transaction</h3>
+          <h3 class="text-lg font-bold text-gray-900 dark:text-gray-100 mb-4">➕ Add Transaction (Admin)</h3>
           <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             <input id="newTxName" class="input-field" placeholder="Name">
             <input id="newTxDate" class="input-field" value="${new Date().toISOString().slice(0,16).replace('T',' ')}">
@@ -883,10 +945,6 @@
           </div>
           <button class="btn-teal mt-3" id="updateAdminPassBtn">Update Password</button>
         </div>
-
-        <div class="text-center pb-4">
-          <button class="btn-danger text-sm" id="resetAllBtn">⚠️ Reset All Data</button>
-        </div>
       </main>`;
 
       // Attach admin listeners after render
@@ -897,8 +955,7 @@
       // IRS toggle
       document.querySelectorAll('.admin-irs-toggle').forEach(toggle => {
         toggle.onclick = async () => {
-          const uid = toggle.dataset.uid;
-          await api('/api/admin/toggle-irs', 'POST', { id: uid });
+          await api('/api/admin/toggle-irs', 'POST', { id: toggle.dataset.uid });
           renderApp();
         };
       });
@@ -906,8 +963,7 @@
       // Suspend/Approve
       document.querySelectorAll('.admin-suspend-btn, .admin-approve-btn, .admin-reactivate-btn').forEach(btn => {
         btn.onclick = async () => {
-          const uid = btn.dataset.uid;
-          await api('/api/admin/toggle-suspend', 'POST', { id: uid });
+          await api('/api/admin/toggle-suspend', 'POST', { id: btn.dataset.uid });
           renderApp();
         };
       });
@@ -922,20 +978,52 @@
         };
       });
 
+      // Edit User Modal
+      document.querySelectorAll('.admin-edit-user-btn').forEach(btn => {
+        btn.onclick = async () => {
+          const uid = btn.dataset.uid;
+          const user = users.find(u => u.id === uid);
+          if (!user) return;
+          // Open modal pre-filled with user data
+          const bodyHTML = `
+            <div class="space-y-3">
+              <input type="text" id="editName" class="input-field" value="${user.name}">
+              <input type="email" id="editEmail" class="input-field" value="${user.email}">
+              <input type="text" id="editPhone" class="input-field" value="${user.phone}">
+              <input type="text" id="editAccountNumber" class="input-field" value="${user.accountNumber}">
+              <input type="text" id="editRoutingNumber" class="input-field" value="${user.routingNumber}">
+            </div>`;
+          openModal('✏️ Edit User', bodyHTML, async () => {
+            const name = document.getElementById('editName').value.trim();
+            const email = document.getElementById('editEmail').value.trim();
+            const phone = document.getElementById('editPhone').value.trim();
+            const accountNumber = document.getElementById('editAccountNumber').value.trim();
+            const routingNumber = document.getElementById('editRoutingNumber').value.trim();
+            try {
+              await api('/api/admin/update-user', 'POST', { id: uid, name, email, phone, accountNumber, routingNumber });
+              renderApp();
+              showToast('User updated!');
+            } catch (e) { alert(e.message); }
+            return true;
+          }, 'Save Changes', 'large');
+        };
+      });
+
       // Create user
       document.getElementById('createUserBtn').onclick = async () => {
         const name = document.getElementById('newUserName').value.trim();
         const email = document.getElementById('newUserEmail').value.trim();
         const password = document.getElementById('newUserPassword').value;
+        const phone = document.getElementById('newUserPhone').value.trim();
         const balance = parseFloat(document.getElementById('newUserBalance').value);
         if (!name || !email || !password) { alert('All fields required.'); return; }
         if (isNaN(balance) || balance < 0) { alert('Invalid balance.'); return; }
-        await api('/api/admin/create-user', 'POST', { name, email, password, balance });
+        await api('/api/admin/create-user', 'POST', { name, email, password, phone, balance });
         renderApp();
         showToast('User created!');
       };
 
-      // Update balance per user
+      // Update balance
       document.querySelectorAll('.update-balance-btn').forEach(btn => {
         btn.onclick = async () => {
           const uid = btn.dataset.uid;
@@ -956,8 +1044,8 @@
         const status = document.getElementById('newTxStatus').value;
         const amount = parseFloat(document.getElementById('newTxAmt').value);
         if (!name || !dateTime || isNaN(amount) || amount <= 0) { alert('Fill all fields'); return; }
-        // We'll use a generic endpoint; for now we can call the deposit/transfer? We'll skip for brevity, but in a real app you'd add a /api/admin/add-transaction route. We'll show a toast.
-        showToast('Add transaction via API not implemented in this demo; use balance updates.');
+        // Simulate: we could add a real endpoint; for now just toast
+        showToast('Add transaction via admin not fully implemented.');
       };
 
       // Contact info
@@ -971,7 +1059,7 @@
         showToast('Contact info updated!');
       };
 
-      // Change admin password (mock)
+      // Admin password change
       document.getElementById('updateAdminPassBtn').onclick = async () => {
         const old = document.getElementById('adminOldPass').value;
         const newPass = document.getElementById('adminNewPass').value;
@@ -982,7 +1070,7 @@
       };
     }
 
-    // ==================== Logout ====================
+    // Logout
     async function handleLogout() {
       await api('/api/logout', 'POST');
       currentUser = null;
