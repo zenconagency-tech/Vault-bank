@@ -1,15 +1,15 @@
-// ----
+// 1. WebSocket polyfill (must be first)
 const WebSocket = require('ws');
 global.WebSocket = WebSocket;
 
-//----
+// 2. Imports
 const express = require('express');
 const session = require('express-session');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const app = express();
 
-// ---------- Supabase Client ----------
+// 3. Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'https://lxpbtmtpeixeuxqlxhhz.supabase.co';
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4cGJ0bXRwZWl4ZXV4cWx4aGh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzOTE1OTUsImV4cCI6MjA5NTk2NzU5NX0.CSjROUphKSlSmv8yRBpYmID0SkuJGjsoJrWWPeLV_54';
 const supabase = createClient(supabaseUrl, supabaseKey, {
@@ -17,7 +17,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false }
 });
 
-// ---------- Middleware ----------
+// 4. Middleware
 app.use(express.json());
 app.use(session({
   secret: 'vault-real-secret',
@@ -37,17 +37,18 @@ function requireAdmin(req, res, next) {
   res.status(403).json({ error: 'Admin only' });
 }
 
-// ---------- Auth ----------
+// ==================== AUTH ====================
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
 
-  // Admin login
+  // Admin login (hardcoded – uses no Supabase)
   if (email === 'admin@bank.com' && password === 'admin123') {
     req.session.user = { isAdmin: true, email };
     return res.json({ isAdmin: true, email });
   }
 
+  // User login
   const { data: user, error } = await supabase
     .from('users')
     .select('*')
@@ -67,7 +68,7 @@ app.post('/api/logout', (req, res) => {
   res.json({ message: 'Logged out' });
 });
 
-// ---------- User Data ----------
+// ==================== USER DATA ====================
 app.get('/api/user', requireLogin, async (req, res) => {
   if (req.session.user.isAdmin) return res.json({ isAdmin: true });
 
@@ -95,7 +96,7 @@ app.get('/api/user', requireLogin, async (req, res) => {
   res.json({ ...safe, transactions: transactions || [], payees: payees || [] });
 });
 
-// ---------- User Lookup ----------
+// ==================== USER LOOKUP (for Zelle/Internal) ====================
 app.get('/api/user/lookup', requireLogin, async (req, res) => {
   const { email, phone } = req.query;
   let query = supabase.from('users').select('email');
@@ -107,7 +108,7 @@ app.get('/api/user/lookup', requireLogin, async (req, res) => {
   res.json({ email: data.email });
 });
 
-// ---------- Transfer ----------
+// ==================== TRANSFER ====================
 app.post('/api/transfer', requireLogin, async (req, res) => {
   const { toEmail, amount, pin, external, externalDetails } = req.body;
   if (!amount || !pin) return res.status(400).json({ error: 'Missing fields' });
@@ -127,7 +128,7 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
   if (external) {
-    // External transfer: deduct sender only
+    // External transfer: only deduct sender
     const { error: updErr } = await supabase
       .from('users')
       .update({
@@ -183,7 +184,7 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
 
     if (sUpd || rUpd) return res.status(500).json({ error: 'Transfer failed' });
 
-    // Add transactions
+    // Insert transactions for both
     await supabase.from('transactions').insert([
       {
         userEmail: sender.email,
@@ -209,7 +210,7 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
   }
 });
 
-// ---------- Bill Pay ----------
+// ==================== BILL PAY ====================
 app.post('/api/billpay', requireLogin, async (req, res) => {
   const { payee, amount, pin } = req.body;
   if (!payee || !amount || !pin) return res.status(400).json({ error: 'Missing fields' });
@@ -250,7 +251,7 @@ app.post('/api/billpay', requireLogin, async (req, res) => {
   res.json({ message: 'Bill paid' });
 });
 
-// ---------- Deposit ----------
+// ==================== DEPOSIT ====================
 app.post('/api/deposit', requireLogin, async (req, res) => {
   const { amount, source } = req.body;
   if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
@@ -286,16 +287,17 @@ app.post('/api/deposit', requireLogin, async (req, res) => {
   res.json({ message: 'Deposit successful' });
 });
 
-// ---------- Card Lock ----------
+// ==================== CARD LOCK ====================
 app.post('/api/card/lock', requireLogin, async (req, res) => {
-  const { data: user } = await supabase
+  const { data: user, error } = await supabase
     .from('users')
     .select('cardLocked')
     .eq('email', req.session.user.email)
     .single();
 
-  const newLocked = !user.cardLocked;
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
 
+  const newLocked = !user.cardLocked;
   await supabase
     .from('users')
     .update({ cardLocked: newLocked })
@@ -304,15 +306,16 @@ app.post('/api/card/lock', requireLogin, async (req, res) => {
   res.json({ locked: newLocked });
 });
 
-// ---------- Profile Updates ----------
+// ==================== PROFILE UPDATES ====================
 app.post('/api/profile/pin', requireLogin, async (req, res) => {
   const { currentPin, newPin } = req.body;
-  const { data: user } = await supabase
+  const { data: user, error } = await supabase
     .from('users')
     .select('transactionPin')
     .eq('email', req.session.user.email)
     .single();
 
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
   if (currentPin !== user.transactionPin) return res.status(400).json({ error: 'Incorrect current PIN' });
   if (!/^\d{4}$/.test(newPin)) return res.status(400).json({ error: 'Invalid new PIN' });
 
@@ -337,11 +340,13 @@ app.post('/api/profile/password', requireLogin, async (req, res) => {
 });
 
 app.post('/api/profile/card/visibility', requireLogin, async (req, res) => {
-  const { data: user } = await supabase
+  const { data: user, error } = await supabase
     .from('users')
     .select('showCardDigits')
     .eq('email', req.session.user.email)
     .single();
+
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
 
   await supabase
     .from('users')
@@ -361,7 +366,7 @@ app.post('/api/profile/darkmode', requireLogin, async (req, res) => {
   res.json({ darkMode });
 });
 
-// ---------- Bank Info ----------
+// ==================== BANK INFO ====================
 app.get('/api/bankinfo', async (req, res) => {
   const { data, error } = await supabase
     .from('bank_info')
@@ -373,7 +378,7 @@ app.get('/api/bankinfo', async (req, res) => {
   res.json(data);
 });
 
-// ---------- Admin Routes ----------
+// ==================== ADMIN ROUTES ====================
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   const { data, error } = await supabase
     .from('users')
@@ -383,9 +388,26 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
   res.json(data);
 });
 
+app.get('/api/admin/user/:id', requireAdmin, async (req, res) => {
+  const { data, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('id', req.params.id)
+    .single();
+
+  if (error || !data) return res.status(404).json({ error: 'User not found' });
+  res.json(data);
+});
+
 app.post('/api/admin/toggle-suspend', requireAdmin, async (req, res) => {
   const { id } = req.body;
-  const { data: user } = await supabase.from('users').select('suspended').eq('id', id).single();
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('suspended')
+    .eq('id', id)
+    .single();
+
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
 
   await supabase
     .from('users')
@@ -397,7 +419,13 @@ app.post('/api/admin/toggle-suspend', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/toggle-irs', requireAdmin, async (req, res) => {
   const { id } = req.body;
-  const { data: user } = await supabase.from('users').select('irsHold').eq('id', id).single();
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('irsHold')
+    .eq('id', id)
+    .single();
+
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
 
   await supabase
     .from('users')
@@ -409,18 +437,24 @@ app.post('/api/admin/toggle-irs', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
   const { id } = req.body;
-  // Delete associated transactions and payees first
-  const { data: user } = await supabase.from('users').select('email').eq('id', id).single();
-  if (user) {
-    await supabase.from('transactions').delete().eq('userEmail', user.email);
-    await supabase.from('payees').delete().eq('userEmail', user.email);
-  }
+  // Find the user first to get email for transaction/payee cleanup
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('email')
+    .eq('id', id)
+    .single();
 
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
+
+  // Delete associated transactions and payees
+  await supabase.from('transactions').delete().eq('userEmail', user.email);
+  await supabase.from('payees').delete().eq('userEmail', user.email);
   await supabase.from('users').delete().eq('id', id);
+
   res.json({ success: true });
 });
 
-// Admin: Create user (with unique account & card generation)
+// Helper functions for unique account/card generation
 function generateUniqueAccountNumber() {
   return Math.floor(100000000000 + Math.random() * 900000000000).toString();
 }
@@ -433,7 +467,12 @@ app.post('/api/admin/create-user', requireAdmin, async (req, res) => {
   if (!name || !email || !password) return res.status(400).json({ error: 'Missing fields' });
 
   // Check email uniqueness
-  const { data: existing } = await supabase.from('users').select('id').eq('email', email).single();
+  const { data: existing } = await supabase
+    .from('users')
+    .select('id')
+    .eq('email', email)
+    .single();
+
   if (existing) return res.status(400).json({ error: 'Email already exists' });
 
   const id = 'u' + Date.now().toString(36);
@@ -498,7 +537,7 @@ app.post('/api/admin/update-contact', requireAdmin, async (req, res) => {
 app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (currentPassword !== 'admin123') return res.status(400).json({ error: 'Incorrect current password' });
-  // In a real app you'd update admin credentials; here we just acknowledge
+  // For a real implementation you'd update the admin password in DB. For now we acknowledge.
   res.json({ success: true });
 });
 
