@@ -157,80 +157,71 @@ app.get('/api/user/lookup', requireLogin, async (req, res) => {
   res.json({ email: data.email });
 });
 
-// ==================== TRANSFER ====================
-// PIN validation helper (reuse what you already have)
-function validatePin(user, pin) {
-  if (!pin || pin !== user.transactionpin) {
-    return false;
-  }
-  return true;
-}
-
+// ==================== TRANSFER (Atomic RPC) ====================
 app.post('/api/transfer', requireLogin, async (req, res) => {
-  const { toEmail, amount, pin, description } = req.body;
-  if (!toEmail || !amount || !pin) {
-    return res.status(400).json({ error: 'Missing required fields' });
+  try {
+    const { toEmail, amount, pin, description } = req.body;
+
+    // 1. Input validation
+    if (!toEmail || !amount || !pin) {
+      return res.status(400).json({ error: 'Missing required fields: toEmail, amount, pin' });
+    }
+    const amt = parseFloat(amount);
+    if (isNaN(amt) || amt <= 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+
+    // 2. Fetch sender (for PIN and quick IRS check)
+    const { data: sender, error: senderErr } = await supabase
+      .from('users')
+      .select('email, transactionpin, irshold, availablebalance')
+      .eq('email', req.session.user.email)
+      .single();
+
+    if (senderErr || !sender) {
+      return res.status(404).json({ error: 'Sender account not found' });
+    }
+
+    // 3. PIN validation
+    if (pin !== sender.transactionpin) {
+      return res.status(403).json({ error: 'Incorrect Transaction PIN' });
+    }
+
+    // 4. Quick IRS hold check (optional – also inside RPC, but gives faster response)
+    if (sender.irshold) {
+      return res.status(403).json({ error: 'Transfer failed: Account currently under regulatory review.' });
+    }
+
+    // 5. Call the atomic RPC
+    const { data: result, error: rpcError } = await supabase.rpc('process_transfer', {
+      p_sender_email: req.session.user.email,
+      p_receiver_email: toEmail,
+      p_amount: amt,
+      p_description: description || `Transfer to ${toEmail}`
+    });
+
+    if (rpcError) {
+      console.error('RPC call failed:', rpcError);
+      return res.status(500).json({ error: 'Transfer processing failed' });
+    }
+
+    if (!result.success) {
+      const msg = result.error || 'Transfer failed';
+      // Map known errors to HTTP statuses
+      if (msg.includes('regulatory review')) return res.status(403).json({ error: msg });
+      if (msg.includes('Insufficient funds')) return res.status(400).json({ error: msg });
+      if (msg.includes('yourself')) return res.status(400).json({ error: msg });
+      if (msg.includes('Receiver not found')) return res.status(404).json({ error: msg });
+      if (msg.includes('Sender not found')) return res.status(404).json({ error: msg });
+      return res.status(500).json({ error: msg });
+    }
+
+    // 6. Success
+    res.json({ message: 'Transfer successful' });
+  } catch (err) {
+    console.error('Unexpected transfer error:', err);
+    res.status(500).json({ error: 'Internal server error' });
   }
-  const amt = parseFloat(amount);
-  if (isNaN(amt) || amt <= 0) {
-    return res.status(400).json({ error: 'Invalid amount' });
-  }
-
-  // Fetch sender for PIN and IRS hold check
-  const { data: sender, error: senderErr } = await supabase
-    .from('users')
-    .select('email, transactionpin, irshold, availablebalance')
-    .eq('email', req.session.user.email)
-    .single();
-
-  if (senderErr || !sender) {
-    return res.status(404).json({ error: 'Sender not found' });
-  }
-
-  // PIN check
-  if (!validatePin(sender, pin)) {
-    return res.status(403).json({ error: 'Incorrect Transaction PIN' });
-  }
-
-  // Quick IRS check before hitting DB transaction (optional but efficient)
-  if (sender.irshold) {
-    return res.status(403).json({ error: 'Transfer failed: Account currently under regulatory review.' });
-  }
-
-  // Quick balance check (can also be done inside RPC, but saves a call)
-  if (sender.availablebalance < amt) {
-    return res.status(400).json({ error: 'Insufficient funds' });
-  }
-
-  // Prevent self‑transfer
-  if (toEmail === req.session.user.email) {
-    return res.status(400).json({ error: 'Cannot transfer to yourself' });
-  }
-
-  // Call the atomic RPC
-  const { data: result, error } = await supabase.rpc('transfer_funds', {
-    p_sender_email: req.session.user.email,
-    p_receiver_email: toEmail,
-    p_amount: amt,
-    p_description: description || `Transfer to ${toEmail}`
-  });
-
-  if (error) {
-    console.error('RPC error:', error);
-    return res.status(500).json({ error: 'Transfer processing failed' });
-  }
-
-  if (!result.success) {
-    const msg = result.error || 'Transfer failed';
-    // Map known errors to appropriate HTTP status codes
-    if (msg.includes('regulatory review')) return res.status(403).json({ error: msg });
-    if (msg.includes('Insufficient')) return res.status(400).json({ error: msg });
-    if (msg.includes('yourself')) return res.status(400).json({ error: msg });
-    if (msg.includes('Receiver not found')) return res.status(404).json({ error: msg });
-    return res.status(500).json({ error: msg });
-  }
-
-  res.json({ message: 'Transfer successful' });
 });
 
 // ==================== BILL PAY ====================
