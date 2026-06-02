@@ -158,99 +158,79 @@ app.get('/api/user/lookup', requireLogin, async (req, res) => {
 });
 
 // ==================== TRANSFER ====================
-app.post('/api/transfer', requireLogin, async (req, res) => {
-  const { toEmail, amount, pin, external, externalDetails } = req.body;
-  if (!amount || !pin) return res.status(400).json({ error: 'Missing fields' });
+// PIN validation helper (reuse what you already have)
+function validatePin(user, pin) {
+  if (!pin || pin !== user.transactionpin) {
+    return false;
+  }
+  return true;
+}
 
+app.post('/api/transfer', requireLogin, async (req, res) => {
+  const { toEmail, amount, pin, description } = req.body;
+  if (!toEmail || !amount || !pin) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+  const amt = parseFloat(amount);
+  if (isNaN(amt) || amt <= 0) {
+    return res.status(400).json({ error: 'Invalid amount' });
+  }
+
+  // Fetch sender for PIN and IRS hold check
   const { data: sender, error: senderErr } = await supabase
     .from('users')
-    .select('*')
+    .select('email, transactionpin, irshold, availablebalance')
     .eq('email', req.session.user.email)
     .single();
 
-  if (senderErr || !sender) return res.status(404).json({ error: 'User not found' });
-  if (pin !== sender.transactionpin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
-  if (sender.irshold) return res.status(403).json({ error: 'Account under IRS hold' });
-  if (sender.availablebalance < amount) return res.status(400).json({ error: 'Insufficient funds' });
-
-  const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
-
-  if (external) {
-    const { error: updErr } = await supabase
-      .from('users')
-      .update({
-        availablebalance: sender.availablebalance - amount,
-        currentbalance: sender.currentbalance - amount
-      })
-      .eq('email', sender.email);
-
-    if (updErr) return res.status(500).json({ error: 'Transfer failed' });
-
-    await supabase.from('transactions').insert({
-      useremail: sender.email,
-      name: externalDetails.fullName || 'External Transfer',
-      datetime: now,
-      type: 'debit',
-      status: 'successful',
-      amount,
-      category: 'Transfer',
-      externaldetails: JSON.stringify(externalDetails)
-    });
-
-    return res.json({ message: 'Transfer successful' });
-  } else {
-    if (!toEmail) return res.status(400).json({ error: 'Recipient email required' });
-
-    const { data: recipient, error: recErr } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', toEmail)
-      .single();
-
-    if (recErr || !recipient) return res.status(404).json({ error: 'Recipient not found' });
-    if (recipient.suspended) return res.status(400).json({ error: 'Recipient suspended' });
-
-    const { error: sUpd } = await supabase
-      .from('users')
-      .update({
-        availablebalance: sender.availablebalance - amount,
-        currentbalance: sender.currentbalance - amount
-      })
-      .eq('email', sender.email);
-
-    const { error: rUpd } = await supabase
-      .from('users')
-      .update({
-        availablebalance: recipient.availablebalance + amount,
-        currentbalance: recipient.currentbalance + amount
-      })
-      .eq('email', recipient.email);
-
-    if (sUpd || rUpd) return res.status(500).json({ error: 'Transfer failed' });
-
-    await supabase.from('transactions').insert([
-      {
-        useremail: sender.email,
-        name: `Transfer to ${toEmail}`,
-        datetime: now,
-        type: 'debit',
-        status: 'successful',
-        amount,
-        category: 'Transfer'
-      },
-      {
-        useremail: recipient.email,
-        name: `Transfer from ${sender.email}`,
-        datetime: now,
-        type: 'credit',
-        status: 'successful',
-        amount,
-        category: 'Transfer'
-      }
-    ]);
-
-    return res.json({ message: 'Transfer successful' });
+  if (senderErr || !sender) {
+    return res.status(404).json({ error: 'Sender not found' });
   }
+
+  // PIN check
+  if (!validatePin(sender, pin)) {
+    return res.status(403).json({ error: 'Incorrect Transaction PIN' });
+  }
+
+  // Quick IRS check before hitting DB transaction (optional but efficient)
+  if (sender.irshold) {
+    return res.status(403).json({ error: 'Transfer failed: Account currently under regulatory review.' });
+  }
+
+  // Quick balance check (can also be done inside RPC, but saves a call)
+  if (sender.availablebalance < amt) {
+    return res.status(400).json({ error: 'Insufficient funds' });
+  }
+
+  // Prevent self‑transfer
+  if (toEmail === req.session.user.email) {
+    return res.status(400).json({ error: 'Cannot transfer to yourself' });
+  }
+
+  // Call the atomic RPC
+  const { data: result, error } = await supabase.rpc('transfer_funds', {
+    p_sender_email: req.session.user.email,
+    p_receiver_email: toEmail,
+    p_amount: amt,
+    p_description: description || `Transfer to ${toEmail}`
+  });
+
+  if (error) {
+    console.error('RPC error:', error);
+    return res.status(500).json({ error: 'Transfer processing failed' });
+  }
+
+  if (!result.success) {
+    const msg = result.error || 'Transfer failed';
+    // Map known errors to appropriate HTTP status codes
+    if (msg.includes('regulatory review')) return res.status(403).json({ error: msg });
+    if (msg.includes('Insufficient')) return res.status(400).json({ error: msg });
+    if (msg.includes('yourself')) return res.status(400).json({ error: msg });
+    if (msg.includes('Receiver not found')) return res.status(404).json({ error: msg });
+    return res.status(500).json({ error: msg });
+  }
+
+  res.json({ message: 'Transfer successful' });
 });
 
 // ==================== BILL PAY ====================
