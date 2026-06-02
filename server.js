@@ -42,7 +42,7 @@ app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
 
-  // Admin login (hardcoded – uses no Supabase)
+  // Admin login (hardcoded)
   if (email === 'admin@bank.com' && password === 'admin123') {
     req.session.user = { isAdmin: true, email };
     return res.json({ isAdmin: true, email });
@@ -96,7 +96,7 @@ app.get('/api/user', requireLogin, async (req, res) => {
   res.json({ ...safe, transactions: transactions || [], payees: payees || [] });
 });
 
-// ==================== USER LOOKUP (for Zelle/Internal) ====================
+// ==================== USER LOOKUP ====================
 app.get('/api/user/lookup', requireLogin, async (req, res) => {
   const { email, phone } = req.query;
   let query = supabase.from('users').select('email');
@@ -113,7 +113,6 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
   const { toEmail, amount, pin, external, externalDetails } = req.body;
   if (!amount || !pin) return res.status(400).json({ error: 'Missing fields' });
 
-  // Fetch sender
   const { data: sender, error: senderErr } = await supabase
     .from('users')
     .select('*')
@@ -128,7 +127,6 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
   if (external) {
-    // External transfer: only deduct sender
     const { error: updErr } = await supabase
       .from('users')
       .update({
@@ -152,7 +150,6 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
 
     return res.json({ message: 'Transfer successful' });
   } else {
-    // Internal / Zelle transfer
     if (!toEmail) return res.status(400).json({ error: 'Recipient email required' });
 
     const { data: recipient, error: recErr } = await supabase
@@ -164,7 +161,6 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
     if (recErr || !recipient) return res.status(404).json({ error: 'Recipient not found' });
     if (recipient.suspended) return res.status(400).json({ error: 'Recipient suspended' });
 
-    // Update sender
     const { error: sUpd } = await supabase
       .from('users')
       .update({
@@ -173,7 +169,6 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
       })
       .eq('email', sender.email);
 
-    // Update recipient
     const { error: rUpd } = await supabase
       .from('users')
       .update({
@@ -184,7 +179,6 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
 
     if (sUpd || rUpd) return res.status(500).json({ error: 'Transfer failed' });
 
-    // Insert transactions for both
     await supabase.from('transactions').insert([
       {
         userEmail: sender.email,
@@ -437,7 +431,6 @@ app.post('/api/admin/toggle-irs', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
   const { id } = req.body;
-  // Find the user first to get email for transaction/payee cleanup
   const { data: user, error } = await supabase
     .from('users')
     .select('email')
@@ -446,7 +439,6 @@ app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
 
   if (error || !user) return res.status(404).json({ error: 'User not found' });
 
-  // Delete associated transactions and payees
   await supabase.from('transactions').delete().eq('userEmail', user.email);
   await supabase.from('payees').delete().eq('userEmail', user.email);
   await supabase.from('users').delete().eq('id', id);
@@ -454,7 +446,6 @@ app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
   res.json({ success: true });
 });
 
-// Helper functions for unique account/card generation
 function generateUniqueAccountNumber() {
   return Math.floor(100000000000 + Math.random() * 900000000000).toString();
 }
@@ -466,7 +457,6 @@ app.post('/api/admin/create-user', requireAdmin, async (req, res) => {
   const { name, email, password, phone, balance } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: 'Missing fields' });
 
-  // Check email uniqueness
   const { data: existing } = await supabase
     .from('users')
     .select('id')
@@ -489,7 +479,8 @@ app.post('/api/admin/create-user', requireAdmin, async (req, res) => {
   const { error } = await supabase.from('users').insert({
     id, email, password, name, phone: userPhone, accountNumber: accNum, routingNumber,
     availableBalance: initialBalance, currentBalance: initialBalance,
-    cardFull, cardLastFour, cardExpiry: expiry, cardCVV: cvv
+    cardFull, cardLastFour, cardExpiry: expiry, cardCVV: cvv,
+    approved: true, suspended: false
   });
 
   if (error) return res.status(500).json({ error: 'Failed to create user' });
@@ -537,7 +528,6 @@ app.post('/api/admin/update-contact', requireAdmin, async (req, res) => {
 app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (currentPassword !== 'admin123') return res.status(400).json({ error: 'Incorrect current password' });
-  // For a real implementation you'd update the admin password in DB. For now we acknowledge.
   res.json({ success: true });
 });
 
