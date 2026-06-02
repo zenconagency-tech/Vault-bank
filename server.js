@@ -57,14 +57,14 @@ db.exec(`
   INSERT OR IGNORE INTO bank_info (id) VALUES (1);
 `);
 
-// ---------- Seed default users only if table is empty ----------
+// Seed default users if table is empty
 const userCount = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
 if (userCount === 0) {
-  // Generate unique account numbers for defaults
+  // Generate unique account numbers and cards for defaults
   const genAccNum = () => {
     let num;
     do {
-      num = Math.floor(100000000000 + Math.random() * 900000000000).toString(); // 12 digits
+      num = Math.floor(100000000000 + Math.random() * 900000000000).toString();
     } while (db.prepare('SELECT COUNT(*) as cnt FROM users WHERE accountNumber = ?').get(num).cnt > 0);
     return num;
   };
@@ -73,7 +73,7 @@ if (userCount === 0) {
   const genCard = () => {
     let card;
     do {
-      card = Math.floor(1000000000000000 + Math.random() * 9000000000000000).toString(); // 16 digits
+      card = Math.floor(1000000000000000 + Math.random() * 9000000000000000).toString();
     } while (db.prepare('SELECT COUNT(*) as cnt FROM users WHERE cardFull = ?').get(card).cnt > 0);
     return card;
   };
@@ -166,7 +166,7 @@ app.post('/api/transfer', requireLogin, (req, res) => {
     // External transfer – deduct only, no recipient update
     db.prepare('UPDATE users SET availableBalance = availableBalance - ?, currentBalance = currentBalance - ? WHERE email = ?').run(amount, amount, req.session.user.email);
     db.prepare('INSERT INTO transactions (userEmail, name, dateTime, type, status, amount, category, externalDetails) VALUES (?,?,?,?,?,?,?,?)')
-      .run(req.session.user.email, externalDetails.name || 'External Transfer', now, 'debit', 'successful', amount, 'Transfer', JSON.stringify(externalDetails));
+      .run(req.session.user.email, externalDetails.fullName || 'External Transfer', now, 'debit', 'successful', amount, 'Transfer', JSON.stringify(externalDetails));
   } else {
     // Internal / Zelle – require recipient email
     if (!toEmail) return res.status(400).json({ error: 'Recipient email required' });
@@ -204,7 +204,7 @@ app.post('/api/billpay', requireLogin, (req, res) => {
   res.json({ message: 'Bill paid' });
 });
 
-// ---------- Deposit (mobile check / wire / debit) ----------
+// ---------- Deposit ----------
 app.post('/api/deposit', requireLogin, (req, res) => {
   const { amount, source } = req.body;
   if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
@@ -283,7 +283,6 @@ app.post('/api/admin/update-user', requireAdmin, (req, res) => {
     const existing = db.prepare('SELECT id FROM users WHERE accountNumber = ? AND id != ?').get(accountNumber, id);
     if (existing) return res.status(400).json({ error: 'Account number already taken' });
   }
-  // Update fields
   const stmt = db.prepare('UPDATE users SET name = COALESCE(?, name), email = COALESCE(?, email), phone = COALESCE(?, phone), accountNumber = COALESCE(?, accountNumber), routingNumber = COALESCE(?, routingNumber) WHERE id = ?');
   stmt.run(name, email, phone, accountNumber, routingNumber, id);
   res.json({ success: true });
@@ -305,14 +304,12 @@ app.post('/api/admin/toggle-irs', requireAdmin, (req, res) => {
 
 app.post('/api/admin/delete-user', requireAdmin, (req, res) => {
   const { id } = req.body;
-  // Delete associated transactions and payees
   db.prepare('DELETE FROM transactions WHERE userEmail = (SELECT email FROM users WHERE id = ?)').run(id);
   db.prepare('DELETE FROM payees WHERE userEmail = (SELECT email FROM users WHERE id = ?)').run(id);
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
   res.json({ success: true });
 });
 
-// Helper to generate unique account number and card
 function generateUniqueAccountNumber() {
   let num;
   do {
@@ -341,7 +338,7 @@ app.post('/api/admin/create-user', requireAdmin, (req, res) => {
   const now = new Date();
   const expiry = (now.getFullYear() + 3).toString().slice(2) + '/' + (now.getMonth() + 1).toString().padStart(2, '0');
   const cvv = Math.floor(100 + Math.random() * 900).toString();
-  const routingNumber = '0210000' + Math.floor(10 + Math.random() * 90).toString(); // 9-digit routing
+  const routingNumber = '0210000' + Math.floor(10 + Math.random() * 90).toString();
   const initialBalance = balance || 0;
   const userPhone = phone || `(${Math.floor(200)+900}) ${Math.floor(100)+900}-${Math.floor(1000)+9000}`;
 
@@ -365,7 +362,7 @@ app.post('/api/admin/update-contact', requireAdmin, (req, res) => {
 app.post('/api/admin/change-password', requireAdmin, (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (currentPassword !== 'admin123') return res.status(400).json({ error: 'Incorrect current password' });
-  // For a real system you would update admin credentials in DB; we'll just acknowledge
+  // In a real system you'd update admin credentials in DB.
   res.json({ success: true });
 });
 
@@ -374,8 +371,8 @@ app.get('/api/admin/transactions', requireAdmin, (req, res) => {
   res.json(txs);
 });
 
-// Fallback
-app.get('*', (req, res) => {
+// Fallback – send index.html for any non-API route
+app.get('/*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

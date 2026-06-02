@@ -164,7 +164,7 @@
             </div>
             <div id="modalBody">${bodyHTML}</div>
             ${onSave ? `
-            <div class="flex gap-3 mt-5 pt-3 border-t border-gray-100 dark:border-gray-600 sticky bottom-0 bg-white dark:bg-gray-800">
+            <div class="flex gap-3 mt-5 pt-3 border-t border-gray-100 dark:border-gray-600 sticky bottom-0 bg-white dark:bg-gray-800" id="modalFooter">
               <button onclick="closeModal()" class="btn-outline flex-1 text-sm">Cancel</button>
               <button id="modalSaveBtn" class="btn-primary flex-1 text-sm">${saveLabel}</button>
             </div>` : ''}
@@ -210,7 +210,8 @@
               <div class="spinner"></div>
               <p class="text-gray-700 dark:text-gray-300 mt-2 font-medium">Processing ${type}...</p>
             </div>`;
-          document.getElementById('modalFooter')?.classList.add('hidden');
+          const footer = document.getElementById('modalFooter');
+          if (footer) footer.classList.add('hidden');
 
           await new Promise(r => setTimeout(r, 3000));
 
@@ -220,6 +221,7 @@
               <p class="text-gray-700 dark:text-gray-300">${description}: ${formatUSD(amount)}</p>
               <button class="btn-primary mt-4 text-sm" onclick="closeModal()">Close</button>
             </div>`;
+          // Refresh balance and re-render dashboard
           await fetchUser();
           renderApp();
         } catch (err) {
@@ -429,10 +431,10 @@
             <input type="text" id="extFullName" class="input-field" placeholder="Recipient Full Name">
             <input type="text" id="extBankName" class="input-field" placeholder="Bank Name">
             <input type="text" id="extAccountNum" class="input-field" placeholder="Account Number">
-            <input type="text" id="extRoutingNum" class="input-field" placeholder="Routing Number">
+            <input type="text" id="extRoutingNum" class="input-field" placeholder="Routing Number (ABA)">
+            <select id="extAccountType" class="input-field"><option value="Checking">Checking</option><option value="Savings">Savings</option></select>
             <input type="number" id="extAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
             <input type="text" id="extMemo" class="input-field" placeholder="Memo (optional)">
-            <select id="extType" class="input-field"><option value="ACH">ACH</option><option value="Wire">Wire</option></select>
             <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
           </div>
           <div id="tabZelle" class="space-y-3 hidden">
@@ -475,9 +477,9 @@
             const routNum = document.getElementById('extRoutingNum').value.trim();
             if (!fullName || !bankName || !acctNum || !routNum) { alert('Fill all required fields.'); return; }
             const memo = document.getElementById('extMemo').value.trim();
-            const type = document.getElementById('extType').value;
+            const accountType = document.getElementById('extAccountType').value;
             extra.external = true;
-            extra.externalDetails = { fullName, bankName, accountNumber: acctNum, routingNumber: routNum, memo, type };
+            extra.externalDetails = { fullName, bankName, accountNumber: acctNum, routingNumber: routNum, memo, accountType };
             description = `External Transfer to ${fullName}`;
           } else if (activeTab === 'zelle') {
             amount = parseFloat(document.getElementById('zelleAmount').value);
@@ -508,7 +510,7 @@
       }, 100);
     }
 
-    // ---------- Deposit Modal (with camera) ----------
+    // ---------- Deposit Modal (camera replaced with file upload) ----------
     function openDepositModal() {
       let activeTab = 'check';
       const bodyHTML = `
@@ -518,15 +520,17 @@
           <button class="tab-btn" data-tab="debit">💳 Debit Card</button>
         </div>
         <div id="depositTabContent">
-          <div id="tabCheck" class="space-y-3 text-center">
-            <p class="text-sm text-gray-600 dark:text-gray-300">Capture front and back of endorsed check</p>
-            <div id="cameraContainer" class="relative bg-black rounded-xl overflow-hidden" style="height:200px;">
-              <video id="checkVideo" autoplay playsinline class="w-full h-full object-cover hidden"></video>
-              <canvas id="checkCanvas" class="hidden"></canvas>
-              <div id="cameraPlaceholder" class="flex items-center justify-center h-full text-white text-lg">📷 Tap to open camera</div>
+          <div id="tabCheck" class="space-y-3">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Upload or capture a photo of your check (front & back).</p>
+            <div class="border-2 border-dashed border-gray-300 dark:border-gray-500 rounded-xl p-6 text-center">
+              <label class="cursor-pointer block">
+                <span class="text-4xl">📷</span>
+                <p class="font-semibold mt-2 text-gray-900 dark:text-gray-200">Tap to Capture or Choose File</p>
+                <p class="text-xs text-gray-500">Front & Back of endorsed check</p>
+                <input type="file" id="checkFileInput" accept="image/*" capture="environment" class="hidden" multiple>
+              </label>
+              <div id="checkPreview" class="flex gap-2 justify-center mt-3"></div>
             </div>
-            <button id="captureCheckBtn" class="btn-primary btn-sm hidden">Capture</button>
-            <div id="checkPreview" class="flex gap-2 justify-center mt-2"></div>
             <input type="number" id="checkAmount" class="input-field" placeholder="Check Amount" step="0.01" min="0.01">
           </div>
           <div id="tabWire" class="space-y-3 hidden">
@@ -548,9 +552,16 @@
         </div>`;
       openModal('📥 Deposit Funds', bodyHTML, () => {
         let amount = 0, source = '';
-        if (activeTab === 'check') { amount = parseFloat(document.getElementById('checkAmount').value); source = 'Mobile Check'; }
-        else if (activeTab === 'wire') { amount = parseFloat(document.getElementById('wireAmount').value); source = 'Wire Transfer'; }
-        else { amount = parseFloat(document.getElementById('debitAmount').value); source = 'Debit Card'; }
+        if (activeTab === 'check') {
+          amount = parseFloat(document.getElementById('checkAmount').value);
+          source = 'Mobile Check';
+        } else if (activeTab === 'wire') {
+          amount = parseFloat(document.getElementById('wireAmount').value);
+          source = 'Wire Transfer';
+        } else {
+          amount = parseFloat(document.getElementById('debitAmount').value);
+          source = 'Debit Card';
+        }
         if (isNaN(amount) || amount <= 0) { alert('Enter a valid amount.'); return false; }
 
         api('/api/deposit', 'POST', { amount, source }).then(() => {
@@ -562,7 +573,7 @@
         return true;
       }, 'Confirm Deposit', 'large');
 
-      // Tab switching
+      // Tab switching & file preview
       setTimeout(() => {
         const tabs = document.querySelectorAll('.tab-btn[data-tab]');
         const tabContents = { check: document.getElementById('tabCheck'), wire: document.getElementById('tabWire'), debit: document.getElementById('tabDebit') };
@@ -575,52 +586,19 @@
             tabContents[activeTab].classList.remove('hidden');
           };
         });
-        // Camera setup for mobile check
-        if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
-          let stream = null;
-          const video = document.getElementById('checkVideo');
-          const canvas = document.getElementById('checkCanvas');
-          const placeholder = document.getElementById('cameraPlaceholder');
-          const captureBtn = document.getElementById('captureCheckBtn');
-          const previewDiv = document.getElementById('checkPreview');
-          let capturedImages = 0;
 
-          async function startCamera() {
-            try {
-              stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
-              video.srcObject = stream;
-              video.classList.remove('hidden');
-              placeholder.classList.add('hidden');
-              captureBtn.classList.remove('hidden');
-            } catch (err) {
-              showToast('Camera access denied. Use wire or debit deposit.');
-            }
-          }
-          function stopCamera() {
-            if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-            video.classList.add('hidden');
-            placeholder.classList.remove('hidden');
-            captureBtn.classList.add('hidden');
-          }
-
-          // Open camera on click
-          placeholder.onclick = startCamera;
-          video.onclick = startCamera;
-
-          captureBtn.onclick = () => {
-            canvas.width = video.videoWidth;
-            canvas.height = video.videoHeight;
-            canvas.getContext('2d').drawImage(video, 0, 0);
-            const imgData = canvas.toDataURL('image/png');
-            previewDiv.innerHTML += `<img src="${imgData}" class="h-16 rounded border"/>`;
-            capturedImages++;
-            if (capturedImages >= 2) {
-              stopCamera();
-              showToast('Both sides captured. Simulating verification...');
-              // Simulate verification and deposit later (the actual deposit happens on confirm)
-            }
-            if (capturedImages === 1) {
-              showToast('Now capture the back of the check.');
+        // File input preview
+        const fileInput = document.getElementById('checkFileInput');
+        const previewDiv = document.getElementById('checkPreview');
+        if (fileInput) {
+          fileInput.onchange = () => {
+            previewDiv.innerHTML = '';
+            for (const file of fileInput.files) {
+              const reader = new FileReader();
+              reader.onload = (e) => {
+                previewDiv.innerHTML += `<img src="${e.target.result}" class="h-16 rounded border"/>`;
+              };
+              reader.readAsDataURL(file);
             }
           };
         }
@@ -984,7 +962,6 @@
           const uid = btn.dataset.uid;
           const user = users.find(u => u.id === uid);
           if (!user) return;
-          // Open modal pre-filled with user data
           const bodyHTML = `
             <div class="space-y-3">
               <input type="text" id="editName" class="input-field" value="${user.name}">
@@ -1044,7 +1021,7 @@
         const status = document.getElementById('newTxStatus').value;
         const amount = parseFloat(document.getElementById('newTxAmt').value);
         if (!name || !dateTime || isNaN(amount) || amount <= 0) { alert('Fill all fields'); return; }
-        // Simulate: we could add a real endpoint; for now just toast
+        // Simulate: not fully implemented in backend
         showToast('Add transaction via admin not fully implemented.');
       };
 
