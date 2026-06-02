@@ -42,7 +42,7 @@ app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
 
-  // Admin login (hardcoded)
+  // Admin login
   if (email === 'admin@bank.com' && password === 'admin123') {
     req.session.user = { isAdmin: true, email };
     return res.json({ isAdmin: true, email });
@@ -483,8 +483,11 @@ app.post('/api/admin/create-user', requireAdmin, async (req, res) => {
     approved: true, suspended: false
   });
 
-  if (error) return res.status(500).json({ error: 'Failed to create user' });
-  res.json({ success: true });
+  if (error) {
+    console.error('Create user failed:', error);
+    return res.status(500).json({ error: error.message });
+  }
+  res.json({ success: true, message: 'User created' });
 });
 
 app.post('/api/admin/update-balance', requireAdmin, async (req, res) => {
@@ -512,7 +515,7 @@ app.post('/api/admin/update-user', requireAdmin, async (req, res) => {
     .update(updates)
     .eq('id', id);
 
-  if (error) return res.status(400).json({ error: 'Update failed' });
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ success: true });
 });
 
