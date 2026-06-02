@@ -1,93 +1,15 @@
 const express = require('express');
 const session = require('express-session');
-const Database = require('better-sqlite3');
+const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const app = express();
 
-// ---------- Database ----------
-const db = new Database('vault.db');
-db.pragma('journal_mode = WAL');
-
-// Create tables
-db.exec(`
-  CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    name TEXT NOT NULL,
-    phone TEXT DEFAULT '',
-    accountNumber TEXT UNIQUE DEFAULT '',
-    routingNumber TEXT DEFAULT '021000021',
-    approved INTEGER DEFAULT 1,
-    suspended INTEGER DEFAULT 0,
-    irsHold INTEGER DEFAULT 0,
-    availableBalance REAL DEFAULT 1000,
-    currentBalance REAL DEFAULT 1250,
-    cardLocked INTEGER DEFAULT 0,
-    cardLastFour TEXT DEFAULT '',
-    cardFull TEXT DEFAULT '',
-    cardExpiry TEXT DEFAULT '',
-    cardCVV TEXT DEFAULT '',
-    transactionPin TEXT DEFAULT '1234',
-    showCardDigits INTEGER DEFAULT 0,
-    darkMode INTEGER DEFAULT 0
-  );
-  CREATE TABLE IF NOT EXISTS transactions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    userEmail TEXT NOT NULL,
-    name TEXT,
-    dateTime TEXT,
-    type TEXT,
-    status TEXT,
-    amount REAL,
-    category TEXT,
-    externalDetails TEXT
-  );
-  CREATE TABLE IF NOT EXISTS payees (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    userEmail TEXT NOT NULL,
-    name TEXT,
-    accountNumber TEXT
-  );
-  CREATE TABLE IF NOT EXISTS bank_info (
-    id INTEGER PRIMARY KEY CHECK(id = 1),
-    supportEmail TEXT DEFAULT 'support@vaultbank.com',
-    supportPhone TEXT DEFAULT '1-800-555-0199'
-  );
-  INSERT OR IGNORE INTO bank_info (id) VALUES (1);
-`);
-
-// Seed default users if table is empty
-const userCount = db.prepare('SELECT COUNT(*) as cnt FROM users').get().cnt;
-if (userCount === 0) {
-  // Generate unique account numbers and cards for defaults
-  const genAccNum = () => {
-    let num;
-    do {
-      num = Math.floor(100000000000 + Math.random() * 900000000000).toString();
-    } while (db.prepare('SELECT COUNT(*) as cnt FROM users WHERE accountNumber = ?').get(num).cnt > 0);
-    return num;
-  };
-  const acc1 = genAccNum();
-  const acc2 = genAccNum();
-  const genCard = () => {
-    let card;
-    do {
-      card = Math.floor(1000000000000000 + Math.random() * 9000000000000000).toString();
-    } while (db.prepare('SELECT COUNT(*) as cnt FROM users WHERE cardFull = ?').get(card).cnt > 0);
-    return card;
-  };
-  const card1 = genCard();
-  const card2 = genCard();
-  const now = new Date();
-  const exp = (now.getFullYear() + 3).toString().slice(2) + '/' + (now.getMonth() + 1).toString().padStart(2, '0');
-  const cvv1 = Math.floor(100 + Math.random() * 900).toString();
-  const cvv2 = Math.floor(100 + Math.random() * 900).toString();
-
-  const insert = db.prepare('INSERT INTO users (id, email, password, name, phone, accountNumber, routingNumber, availableBalance, currentBalance, cardFull, cardLastFour, cardExpiry, cardCVV) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)');
-  insert.run('u1', 'user@bank.com', 'pass123', 'Alex Johnson', '(555) 123-4567', acc1, '021000021', 12450.75, 13750.25, card1, card1.slice(-4), exp, cvv1);
-  insert.run('u2', 'maria@example.com', 'pass123', 'Maria Garcia', '(555) 987-6543', acc2, '021000022', 500, 750, card2, card2.slice(-4), exp, cvv2);
-}
+// ---------- Supabase Client ----------
+const supabaseUrl = process.env.SUPABASE_URL || 'https://lxpbtmtpeixeuxqlxhhz.supabase.co';
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4cGJ0bXRwZWl4ZXV4cWx4aGh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzOTE1OTUsImV4cCI6MjA5NTk2NzU5NX0.CSjROUphKSlSmv8yRBpYmID0SkuJGjsoJrWWPeLV_54';
+const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: { persistSession: false }
+});
 
 // ---------- Middleware ----------
 app.use(express.json());
@@ -99,6 +21,7 @@ app.use(session({
 }));
 app.use(express.static('public'));
 
+// Auth middleware
 function requireLogin(req, res, next) {
   if (req.session.user) return next();
   res.status(401).json({ error: 'Unauthorized' });
@@ -109,17 +32,26 @@ function requireAdmin(req, res, next) {
 }
 
 // ---------- Auth ----------
-app.post('/api/login', (req, res) => {
+app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
+
+  // Admin login
   if (email === 'admin@bank.com' && password === 'admin123') {
     req.session.user = { isAdmin: true, email };
     return res.json({ isAdmin: true, email });
   }
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email);
-  if (!user) return res.status(401).json({ error: 'Invalid credentials' });
+
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', email)
+    .single();
+
+  if (error || !user) return res.status(401).json({ error: 'Invalid credentials' });
   if (!user.approved || user.suspended) return res.status(403).json({ error: 'Account suspended' });
   if (user.password !== password) return res.status(401).json({ error: 'Invalid credentials' });
+
   req.session.user = { isAdmin: false, email };
   res.json({ isAdmin: false, email });
 });
@@ -130,32 +62,58 @@ app.post('/api/logout', (req, res) => {
 });
 
 // ---------- User Data ----------
-app.get('/api/user', requireLogin, (req, res) => {
+app.get('/api/user', requireLogin, async (req, res) => {
   if (req.session.user.isAdmin) return res.json({ isAdmin: true });
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(req.session.user.email);
-  if (!user) return res.status(404).json({ error: 'User not found' });
+
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', req.session.user.email)
+    .single();
+
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
+
   const { password, ...safe } = user;
-  const transactions = db.prepare('SELECT * FROM transactions WHERE userEmail = ? ORDER BY dateTime DESC').all(user.email);
-  const payees = db.prepare('SELECT * FROM payees WHERE userEmail = ?').all(user.email);
-  res.json({ ...safe, transactions, payees });
+
+  const { data: transactions } = await supabase
+    .from('transactions')
+    .select('*')
+    .eq('userEmail', user.email)
+    .order('dateTime', { ascending: false });
+
+  const { data: payees } = await supabase
+    .from('payees')
+    .select('*')
+    .eq('userEmail', user.email);
+
+  res.json({ ...safe, transactions: transactions || [], payees: payees || [] });
 });
 
-// ---------- User Lookup (for transfers) ----------
-app.get('/api/user/lookup', requireLogin, (req, res) => {
+// ---------- User Lookup ----------
+app.get('/api/user/lookup', requireLogin, async (req, res) => {
   const { email, phone } = req.query;
-  let user = null;
-  if (email) user = db.prepare('SELECT email FROM users WHERE email = ?').get(email);
-  if (!user && phone) user = db.prepare('SELECT email FROM users WHERE phone = ?').get(phone);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json({ email: user.email });
+  let query = supabase.from('users').select('email');
+  if (email) query = query.eq('email', email);
+  if (!email && phone) query = query.eq('phone', phone);
+
+  const { data, error } = await query.single();
+  if (error || !data) return res.status(404).json({ error: 'User not found' });
+  res.json({ email: data.email });
 });
 
-// ---------- Transfer (supports internal/Zelle and external) ----------
-app.post('/api/transfer', requireLogin, (req, res) => {
+// ---------- Transfer ----------
+app.post('/api/transfer', requireLogin, async (req, res) => {
   const { toEmail, amount, pin, external, externalDetails } = req.body;
   if (!amount || !pin) return res.status(400).json({ error: 'Missing fields' });
-  const sender = db.prepare('SELECT * FROM users WHERE email = ?').get(req.session.user.email);
-  if (!sender) return res.status(404).json({ error: 'User not found' });
+
+  // Fetch sender
+  const { data: sender, error: senderErr } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', req.session.user.email)
+    .single();
+
+  if (senderErr || !sender) return res.status(404).json({ error: 'User not found' });
   if (pin !== sender.transactionPin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
   if (sender.irsHold) return res.status(403).json({ error: 'Account under IRS hold' });
   if (sender.availableBalance < amount) return res.status(400).json({ error: 'Insufficient funds' });
@@ -163,172 +121,313 @@ app.post('/api/transfer', requireLogin, (req, res) => {
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
   if (external) {
-    // External transfer – deduct only, no recipient update
-    db.prepare('UPDATE users SET availableBalance = availableBalance - ?, currentBalance = currentBalance - ? WHERE email = ?').run(amount, amount, req.session.user.email);
-    db.prepare('INSERT INTO transactions (userEmail, name, dateTime, type, status, amount, category, externalDetails) VALUES (?,?,?,?,?,?,?,?)')
-      .run(req.session.user.email, externalDetails.fullName || 'External Transfer', now, 'debit', 'successful', amount, 'Transfer', JSON.stringify(externalDetails));
+    // External transfer: deduct sender only
+    const { error: updErr } = await supabase
+      .from('users')
+      .update({
+        availableBalance: sender.availableBalance - amount,
+        currentBalance: sender.currentBalance - amount
+      })
+      .eq('email', sender.email);
+
+    if (updErr) return res.status(500).json({ error: 'Transfer failed' });
+
+    await supabase.from('transactions').insert({
+      userEmail: sender.email,
+      name: externalDetails.fullName || 'External Transfer',
+      dateTime: now,
+      type: 'debit',
+      status: 'successful',
+      amount,
+      category: 'Transfer',
+      externalDetails: JSON.stringify(externalDetails)
+    });
+
+    return res.json({ message: 'Transfer successful' });
   } else {
-    // Internal / Zelle – require recipient email
+    // Internal / Zelle transfer
     if (!toEmail) return res.status(400).json({ error: 'Recipient email required' });
-    const recipient = db.prepare('SELECT * FROM users WHERE email = ?').get(toEmail);
-    if (!recipient) return res.status(404).json({ error: 'Recipient not found' });
+
+    const { data: recipient, error: recErr } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', toEmail)
+      .single();
+
+    if (recErr || !recipient) return res.status(404).json({ error: 'Recipient not found' });
     if (recipient.suspended) return res.status(400).json({ error: 'Recipient suspended' });
 
-    const tx = db.transaction(() => {
-      db.prepare('UPDATE users SET availableBalance = availableBalance - ?, currentBalance = currentBalance - ? WHERE email = ?').run(amount, amount, req.session.user.email);
-      db.prepare('UPDATE users SET availableBalance = availableBalance + ?, currentBalance = currentBalance + ? WHERE email = ?').run(amount, amount, toEmail);
-      db.prepare('INSERT INTO transactions (userEmail, name, dateTime, type, status, amount, category) VALUES (?,?,?,?,?,?,?)')
-        .run(req.session.user.email, `Transfer to ${toEmail}`, now, 'debit', 'successful', amount, 'Transfer');
-      db.prepare('INSERT INTO transactions (userEmail, name, dateTime, type, status, amount, category) VALUES (?,?,?,?,?,?,?)')
-        .run(toEmail, `Transfer from ${req.session.user.email}`, now, 'credit', 'successful', amount, 'Transfer');
-    });
-    tx();
-  }
+    // Update sender
+    const { error: sUpd } = await supabase
+      .from('users')
+      .update({
+        availableBalance: sender.availableBalance - amount,
+        currentBalance: sender.currentBalance - amount
+      })
+      .eq('email', sender.email);
 
-  res.json({ message: 'Transfer successful' });
+    // Update recipient
+    const { error: rUpd } = await supabase
+      .from('users')
+      .update({
+        availableBalance: recipient.availableBalance + amount,
+        currentBalance: recipient.currentBalance + amount
+      })
+      .eq('email', recipient.email);
+
+    if (sUpd || rUpd) return res.status(500).json({ error: 'Transfer failed' });
+
+    // Add transactions
+    await supabase.from('transactions').insert([
+      {
+        userEmail: sender.email,
+        name: `Transfer to ${toEmail}`,
+        dateTime: now,
+        type: 'debit',
+        status: 'successful',
+        amount,
+        category: 'Transfer'
+      },
+      {
+        userEmail: recipient.email,
+        name: `Transfer from ${sender.email}`,
+        dateTime: now,
+        type: 'credit',
+        status: 'successful',
+        amount,
+        category: 'Transfer'
+      }
+    ]);
+
+    return res.json({ message: 'Transfer successful' });
+  }
 });
 
 // ---------- Bill Pay ----------
-app.post('/api/billpay', requireLogin, (req, res) => {
+app.post('/api/billpay', requireLogin, async (req, res) => {
   const { payee, amount, pin } = req.body;
   if (!payee || !amount || !pin) return res.status(400).json({ error: 'Missing fields' });
-  const user = db.prepare('SELECT * FROM users WHERE email = ?').get(req.session.user.email);
+
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('*')
+    .eq('email', req.session.user.email)
+    .single();
+
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
   if (pin !== user.transactionPin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
   if (user.irsHold) return res.status(403).json({ error: 'Account under IRS hold' });
   if (user.availableBalance < amount) return res.status(400).json({ error: 'Insufficient funds' });
 
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
-  db.prepare('UPDATE users SET availableBalance = availableBalance - ?, currentBalance = currentBalance - ? WHERE email = ?').run(amount, amount, req.session.user.email);
-  db.prepare('INSERT INTO transactions (userEmail, name, dateTime, type, status, amount, category) VALUES (?,?,?,?,?,?,?)')
-    .run(req.session.user.email, `Bill Payment - ${payee}`, now, 'debit', 'successful', amount, 'Bills');
+
+  const { error: updErr } = await supabase
+    .from('users')
+    .update({
+      availableBalance: user.availableBalance - amount,
+      currentBalance: user.currentBalance - amount
+    })
+    .eq('email', user.email);
+
+  if (updErr) return res.status(500).json({ error: 'Payment failed' });
+
+  await supabase.from('transactions').insert({
+    userEmail: user.email,
+    name: `Bill Payment - ${payee}`,
+    dateTime: now,
+    type: 'debit',
+    status: 'successful',
+    amount,
+    category: 'Bills'
+  });
+
   res.json({ message: 'Bill paid' });
 });
 
 // ---------- Deposit ----------
-app.post('/api/deposit', requireLogin, (req, res) => {
+app.post('/api/deposit', requireLogin, async (req, res) => {
   const { amount, source } = req.body;
   if (!amount || amount <= 0) return res.status(400).json({ error: 'Invalid amount' });
+
+  const { data: user, error } = await supabase
+    .from('users')
+    .select('availableBalance, currentBalance')
+    .eq('email', req.session.user.email)
+    .single();
+
+  if (error || !user) return res.status(404).json({ error: 'User not found' });
+
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
-  db.prepare('UPDATE users SET availableBalance = availableBalance + ?, currentBalance = currentBalance + ? WHERE email = ?').run(amount, amount, req.session.user.email);
-  db.prepare('INSERT INTO transactions (userEmail, name, dateTime, type, status, amount, category) VALUES (?,?,?,?,?,?,?)')
-    .run(req.session.user.email, `Deposit - ${source}`, now, 'credit', 'successful', amount, 'Deposit');
+
+  await supabase
+    .from('users')
+    .update({
+      availableBalance: user.availableBalance + amount,
+      currentBalance: user.currentBalance + amount
+    })
+    .eq('email', req.session.user.email);
+
+  await supabase.from('transactions').insert({
+    userEmail: req.session.user.email,
+    name: `Deposit - ${source}`,
+    dateTime: now,
+    type: 'credit',
+    status: 'successful',
+    amount,
+    category: 'Deposit'
+  });
+
   res.json({ message: 'Deposit successful' });
 });
 
 // ---------- Card Lock ----------
-app.post('/api/card/lock', requireLogin, (req, res) => {
-  const user = db.prepare('SELECT cardLocked FROM users WHERE email = ?').get(req.session.user.email);
-  const newStatus = user.cardLocked ? 0 : 1;
-  db.prepare('UPDATE users SET cardLocked = ? WHERE email = ?').run(newStatus, req.session.user.email);
-  res.json({ locked: !!newStatus });
+app.post('/api/card/lock', requireLogin, async (req, res) => {
+  const { data: user } = await supabase
+    .from('users')
+    .select('cardLocked')
+    .eq('email', req.session.user.email)
+    .single();
+
+  const newLocked = !user.cardLocked;
+
+  await supabase
+    .from('users')
+    .update({ cardLocked: newLocked })
+    .eq('email', req.session.user.email);
+
+  res.json({ locked: newLocked });
 });
 
 // ---------- Profile Updates ----------
-app.post('/api/profile/pin', requireLogin, (req, res) => {
+app.post('/api/profile/pin', requireLogin, async (req, res) => {
   const { currentPin, newPin } = req.body;
-  const user = db.prepare('SELECT transactionPin FROM users WHERE email = ?').get(req.session.user.email);
+  const { data: user } = await supabase
+    .from('users')
+    .select('transactionPin')
+    .eq('email', req.session.user.email)
+    .single();
+
   if (currentPin !== user.transactionPin) return res.status(400).json({ error: 'Incorrect current PIN' });
   if (!/^\d{4}$/.test(newPin)) return res.status(400).json({ error: 'Invalid new PIN' });
-  db.prepare('UPDATE users SET transactionPin = ? WHERE email = ?').run(newPin, req.session.user.email);
+
+  await supabase
+    .from('users')
+    .update({ transactionPin: newPin })
+    .eq('email', req.session.user.email);
+
   res.json({ message: 'PIN updated' });
 });
 
-app.post('/api/profile/password', requireLogin, (req, res) => {
+app.post('/api/profile/password', requireLogin, async (req, res) => {
   const { newPassword } = req.body;
   if (!newPassword || newPassword.length < 6) return res.status(400).json({ error: 'Min 6 characters' });
-  db.prepare('UPDATE users SET password = ? WHERE email = ?').run(newPassword, req.session.user.email);
+
+  await supabase
+    .from('users')
+    .update({ password: newPassword })
+    .eq('email', req.session.user.email);
+
   res.json({ message: 'Password changed' });
 });
 
-app.post('/api/profile/card/visibility', requireLogin, (req, res) => {
-  const user = db.prepare('SELECT showCardDigits FROM users WHERE email = ?').get(req.session.user.email);
-  const newVal = user.showCardDigits ? 0 : 1;
-  db.prepare('UPDATE users SET showCardDigits = ? WHERE email = ?').run(newVal, req.session.user.email);
-  res.json({ showCardDigits: !!newVal });
+app.post('/api/profile/card/visibility', requireLogin, async (req, res) => {
+  const { data: user } = await supabase
+    .from('users')
+    .select('showCardDigits')
+    .eq('email', req.session.user.email)
+    .single();
+
+  await supabase
+    .from('users')
+    .update({ showCardDigits: !user.showCardDigits })
+    .eq('email', req.session.user.email);
+
+  res.json({ showCardDigits: !user.showCardDigits });
 });
 
-app.post('/api/profile/darkmode', requireLogin, (req, res) => {
+app.post('/api/profile/darkmode', requireLogin, async (req, res) => {
   const { darkMode } = req.body;
-  db.prepare('UPDATE users SET darkMode = ? WHERE email = ?').run(darkMode ? 1 : 0, req.session.user.email);
+  await supabase
+    .from('users')
+    .update({ darkMode })
+    .eq('email', req.session.user.email);
+
   res.json({ darkMode });
 });
 
 // ---------- Bank Info ----------
-app.get('/api/bankinfo', (req, res) => {
-  const info = db.prepare('SELECT * FROM bank_info WHERE id = 1').get();
-  res.json(info);
+app.get('/api/bankinfo', async (req, res) => {
+  const { data, error } = await supabase
+    .from('bank_info')
+    .select('*')
+    .eq('id', 1)
+    .single();
+
+  if (error) return res.status(500).json({ error: 'Could not fetch bank info' });
+  res.json(data);
 });
 
 // ---------- Admin Routes ----------
-app.get('/api/admin/users', requireAdmin, (req, res) => {
-  const users = db.prepare('SELECT id, email, name, phone, accountNumber, routingNumber, approved, suspended, irsHold, availableBalance, currentBalance, cardLocked, cardLastFour, cardExpiry, cardCVV FROM users').all();
-  res.json(users);
+app.get('/api/admin/users', requireAdmin, async (req, res) => {
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, email, name, phone, accountNumber, routingNumber, approved, suspended, irsHold, availableBalance, currentBalance, cardLocked, cardLastFour, cardExpiry, cardCVV');
+
+  if (error) return res.status(500).json({ error: 'Database error' });
+  res.json(data);
 });
 
-app.get('/api/admin/user/:id', requireAdmin, (req, res) => {
-  const user = db.prepare('SELECT id, email, name, phone, accountNumber, routingNumber, approved, suspended, irsHold, availableBalance, currentBalance, cardLocked, cardLastFour, cardExpiry, cardCVV FROM users WHERE id = ?').get(req.params.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  res.json(user);
+app.post('/api/admin/toggle-suspend', requireAdmin, async (req, res) => {
+  const { id } = req.body;
+  const { data: user } = await supabase.from('users').select('suspended').eq('id', id).single();
+
+  await supabase
+    .from('users')
+    .update({ suspended: !user.suspended })
+    .eq('id', id);
+
+  res.json({ success: true });
 });
 
-app.post('/api/admin/update-user', requireAdmin, (req, res) => {
-  const { id, name, email, phone, accountNumber, routingNumber } = req.body;
-  if (!id) return res.status(400).json({ error: 'Missing ID' });
-  // Check uniqueness
-  if (email) {
-    const existing = db.prepare('SELECT id FROM users WHERE email = ? AND id != ?').get(email, id);
-    if (existing) return res.status(400).json({ error: 'Email already taken' });
+app.post('/api/admin/toggle-irs', requireAdmin, async (req, res) => {
+  const { id } = req.body;
+  const { data: user } = await supabase.from('users').select('irsHold').eq('id', id).single();
+
+  await supabase
+    .from('users')
+    .update({ irsHold: !user.irsHold })
+    .eq('id', id);
+
+  res.json({ success: true });
+});
+
+app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
+  const { id } = req.body;
+  // Delete associated transactions and payees first
+  const { data: user } = await supabase.from('users').select('email').eq('id', id).single();
+  if (user) {
+    await supabase.from('transactions').delete().eq('userEmail', user.email);
+    await supabase.from('payees').delete().eq('userEmail', user.email);
   }
-  if (accountNumber) {
-    const existing = db.prepare('SELECT id FROM users WHERE accountNumber = ? AND id != ?').get(accountNumber, id);
-    if (existing) return res.status(400).json({ error: 'Account number already taken' });
-  }
-  const stmt = db.prepare('UPDATE users SET name = COALESCE(?, name), email = COALESCE(?, email), phone = COALESCE(?, phone), accountNumber = COALESCE(?, accountNumber), routingNumber = COALESCE(?, routingNumber) WHERE id = ?');
-  stmt.run(name, email, phone, accountNumber, routingNumber, id);
+
+  await supabase.from('users').delete().eq('id', id);
   res.json({ success: true });
 });
 
-app.post('/api/admin/toggle-suspend', requireAdmin, (req, res) => {
-  const { id } = req.body;
-  const user = db.prepare('SELECT suspended FROM users WHERE id = ?').get(id);
-  db.prepare('UPDATE users SET suspended = ? WHERE id = ?').run(user.suspended ? 0 : 1, id);
-  res.json({ success: true });
-});
-
-app.post('/api/admin/toggle-irs', requireAdmin, (req, res) => {
-  const { id } = req.body;
-  const user = db.prepare('SELECT irsHold FROM users WHERE id = ?').get(id);
-  db.prepare('UPDATE users SET irsHold = ? WHERE id = ?').run(user.irsHold ? 0 : 1, id);
-  res.json({ success: true });
-});
-
-app.post('/api/admin/delete-user', requireAdmin, (req, res) => {
-  const { id } = req.body;
-  db.prepare('DELETE FROM transactions WHERE userEmail = (SELECT email FROM users WHERE id = ?)').run(id);
-  db.prepare('DELETE FROM payees WHERE userEmail = (SELECT email FROM users WHERE id = ?)').run(id);
-  db.prepare('DELETE FROM users WHERE id = ?').run(id);
-  res.json({ success: true });
-});
-
+// Admin: Create user (with unique account & card generation)
 function generateUniqueAccountNumber() {
-  let num;
-  do {
-    num = Math.floor(100000000000 + Math.random() * 900000000000).toString();
-  } while (db.prepare('SELECT COUNT(*) as cnt FROM users WHERE accountNumber = ?').get(num).cnt > 0);
-  return num;
+  return Math.floor(100000000000 + Math.random() * 900000000000).toString();
 }
 function generateUniqueCard() {
-  let card;
-  do {
-    card = Math.floor(1000000000000000 + Math.random() * 9000000000000000).toString();
-  } while (db.prepare('SELECT COUNT(*) as cnt FROM users WHERE cardFull = ?').get(card).cnt > 0);
-  return card;
+  return Math.floor(1000000000000000 + Math.random() * 9000000000000000).toString();
 }
 
-app.post('/api/admin/create-user', requireAdmin, (req, res) => {
+app.post('/api/admin/create-user', requireAdmin, async (req, res) => {
   const { name, email, password, phone, balance } = req.body;
   if (!name || !email || !password) return res.status(400).json({ error: 'Missing fields' });
-  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(email);
+
+  // Check email uniqueness
+  const { data: existing } = await supabase.from('users').select('id').eq('email', email).single();
   if (existing) return res.status(400).json({ error: 'Email already exists' });
 
   const id = 'u' + Date.now().toString(36);
@@ -342,36 +441,78 @@ app.post('/api/admin/create-user', requireAdmin, (req, res) => {
   const initialBalance = balance || 0;
   const userPhone = phone || `(${Math.floor(200)+900}) ${Math.floor(100)+900}-${Math.floor(1000)+9000}`;
 
-  db.prepare('INSERT INTO users (id, email, password, name, phone, accountNumber, routingNumber, availableBalance, currentBalance, cardFull, cardLastFour, cardExpiry, cardCVV) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)')
-    .run(id, email, password, name, userPhone, accNum, routingNumber, initialBalance, initialBalance, cardFull, cardLastFour, expiry, cvv);
+  const { error } = await supabase.from('users').insert({
+    id, email, password, name, phone: userPhone, accountNumber: accNum, routingNumber,
+    availableBalance: initialBalance, currentBalance: initialBalance,
+    cardFull, cardLastFour, cardExpiry: expiry, cardCVV: cvv
+  });
+
+  if (error) return res.status(500).json({ error: 'Failed to create user' });
   res.json({ success: true });
 });
 
-app.post('/api/admin/update-balance', requireAdmin, (req, res) => {
+app.post('/api/admin/update-balance', requireAdmin, async (req, res) => {
   const { id, availableBalance, currentBalance } = req.body;
-  db.prepare('UPDATE users SET availableBalance = ?, currentBalance = ? WHERE id = ?').run(availableBalance, currentBalance, id);
+  await supabase
+    .from('users')
+    .update({ availableBalance, currentBalance })
+    .eq('id', id);
   res.json({ success: true });
 });
 
-app.post('/api/admin/update-contact', requireAdmin, (req, res) => {
+app.post('/api/admin/update-user', requireAdmin, async (req, res) => {
+  const { id, name, email, phone, accountNumber, routingNumber } = req.body;
+  if (!id) return res.status(400).json({ error: 'Missing ID' });
+
+  const updates = {};
+  if (name) updates.name = name;
+  if (email) updates.email = email;
+  if (phone) updates.phone = phone;
+  if (accountNumber) updates.accountNumber = accountNumber;
+  if (routingNumber) updates.routingNumber = routingNumber;
+
+  const { error } = await supabase
+    .from('users')
+    .update(updates)
+    .eq('id', id);
+
+  if (error) return res.status(400).json({ error: 'Update failed' });
+  res.json({ success: true });
+});
+
+app.post('/api/admin/update-contact', requireAdmin, async (req, res) => {
   const { supportEmail, supportPhone } = req.body;
-  db.prepare('UPDATE bank_info SET supportEmail = ?, supportPhone = ? WHERE id = 1').run(supportEmail, supportPhone);
+  await supabase
+    .from('bank_info')
+    .update({ supportEmail, supportPhone })
+    .eq('id', 1);
   res.json({ success: true });
 });
 
-app.post('/api/admin/change-password', requireAdmin, (req, res) => {
+app.post('/api/admin/change-password', requireAdmin, async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (currentPassword !== 'admin123') return res.status(400).json({ error: 'Incorrect current password' });
-  // In a real system you'd update admin credentials in DB.
+  // In a real app you'd update admin credentials; here we just acknowledge
   res.json({ success: true });
 });
 
-app.get('/api/admin/transactions', requireAdmin, (req, res) => {
-  const txs = db.prepare('SELECT t.*, u.email as userEmail FROM transactions t JOIN users u ON t.userEmail = u.email ORDER BY t.dateTime DESC').all();
+app.get('/api/admin/transactions', requireAdmin, async (req, res) => {
+  const { data, error } = await supabase
+    .from('transactions')
+    .select('*, users!inner(email)')
+    .order('dateTime', { ascending: false });
+
+  if (error) return res.status(500).json({ error: 'Database error' });
+
+  const txs = data.map(tx => ({
+    ...tx,
+    userEmail: tx.users ? tx.users.email : tx.userEmail,
+    users: undefined
+  }));
   res.json(txs);
 });
 
-// Fallback – send index.html for any non-API route
+// Fallback
 app.get('/*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
