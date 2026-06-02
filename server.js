@@ -1,4 +1,4 @@
-// 1. WebSocket polyfill (must be first)
+// 1. WebSocket polyfill
 const WebSocket = require('ws');
 global.WebSocket = WebSocket;
 
@@ -37,18 +37,63 @@ function requireAdmin(req, res, next) {
   res.status(403).json({ error: 'Admin only' });
 }
 
+// ---------- Helper: convert DB row (lowercase) to camelCase for frontend ----------
+function toCamelCaseUser(dbUser) {
+  return {
+    id: dbUser.id,
+    email: dbUser.email,
+    password: dbUser.password, // not sent normally
+    name: dbUser.name,
+    phone: dbUser.phone,
+    accountNumber: dbUser.accountnumber,
+    routingNumber: dbUser.routingnumber,
+    approved: dbUser.approved,
+    suspended: dbUser.suspended,
+    irsHold: dbUser.irshold,
+    availableBalance: dbUser.availablebalance,
+    currentBalance: dbUser.currentbalance,
+    cardLocked: dbUser.cardlocked,
+    cardLastFour: dbUser.cardlastfour,
+    cardFull: dbUser.cardfull,
+    cardExpiry: dbUser.cardexpiry,
+    cardCVV: dbUser.cardcvv,
+    transactionPin: dbUser.transactionpin,
+    showCardDigits: dbUser.showcarddigits,
+    darkMode: dbUser.darkmode
+  };
+}
+
+function toCamelCaseTransaction(tx) {
+  return {
+    id: tx.id,
+    userEmail: tx.useremail,
+    name: tx.name,
+    dateTime: tx.datetime,
+    type: tx.type,
+    status: tx.status,
+    amount: tx.amount,
+    category: tx.category,
+    externalDetails: tx.externaldetails
+  };
+}
+
+function toCamelCaseBankInfo(info) {
+  return {
+    supportEmail: info.supportemail,
+    supportPhone: info.supportphone
+  };
+}
+
 // ==================== AUTH ====================
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ error: 'Missing fields' });
 
-  // Admin login
   if (email === 'admin@bank.com' && password === 'admin123') {
     req.session.user = { isAdmin: true, email };
     return res.json({ isAdmin: true, email });
   }
 
-  // User login
   const { data: user, error } = await supabase
     .from('users')
     .select('*')
@@ -80,20 +125,24 @@ app.get('/api/user', requireLogin, async (req, res) => {
 
   if (error || !user) return res.status(404).json({ error: 'User not found' });
 
-  const { password, ...safe } = user;
+  const safe = toCamelCaseUser(user);
 
   const { data: transactions } = await supabase
     .from('transactions')
     .select('*')
-    .eq('userEmail', user.email)
-    .order('dateTime', { ascending: false });
+    .eq('useremail', user.email)
+    .order('datetime', { ascending: false });
 
   const { data: payees } = await supabase
     .from('payees')
     .select('*')
-    .eq('userEmail', user.email);
+    .eq('useremail', user.email);
 
-  res.json({ ...safe, transactions: transactions || [], payees: payees || [] });
+  res.json({
+    ...safe,
+    transactions: (transactions || []).map(toCamelCaseTransaction),
+    payees: payees || []
+  });
 });
 
 // ==================== USER LOOKUP ====================
@@ -120,9 +169,9 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
     .single();
 
   if (senderErr || !sender) return res.status(404).json({ error: 'User not found' });
-  if (pin !== sender.transactionPin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
-  if (sender.irsHold) return res.status(403).json({ error: 'Account under IRS hold' });
-  if (sender.availableBalance < amount) return res.status(400).json({ error: 'Insufficient funds' });
+  if (pin !== sender.transactionpin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
+  if (sender.irshold) return res.status(403).json({ error: 'Account under IRS hold' });
+  if (sender.availablebalance < amount) return res.status(400).json({ error: 'Insufficient funds' });
 
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
@@ -130,22 +179,22 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
     const { error: updErr } = await supabase
       .from('users')
       .update({
-        availableBalance: sender.availableBalance - amount,
-        currentBalance: sender.currentBalance - amount
+        availablebalance: sender.availablebalance - amount,
+        currentbalance: sender.currentbalance - amount
       })
       .eq('email', sender.email);
 
     if (updErr) return res.status(500).json({ error: 'Transfer failed' });
 
     await supabase.from('transactions').insert({
-      userEmail: sender.email,
+      useremail: sender.email,
       name: externalDetails.fullName || 'External Transfer',
-      dateTime: now,
+      datetime: now,
       type: 'debit',
       status: 'successful',
       amount,
       category: 'Transfer',
-      externalDetails: JSON.stringify(externalDetails)
+      externaldetails: JSON.stringify(externalDetails)
     });
 
     return res.json({ message: 'Transfer successful' });
@@ -164,16 +213,16 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
     const { error: sUpd } = await supabase
       .from('users')
       .update({
-        availableBalance: sender.availableBalance - amount,
-        currentBalance: sender.currentBalance - amount
+        availablebalance: sender.availablebalance - amount,
+        currentbalance: sender.currentbalance - amount
       })
       .eq('email', sender.email);
 
     const { error: rUpd } = await supabase
       .from('users')
       .update({
-        availableBalance: recipient.availableBalance + amount,
-        currentBalance: recipient.currentBalance + amount
+        availablebalance: recipient.availablebalance + amount,
+        currentbalance: recipient.currentbalance + amount
       })
       .eq('email', recipient.email);
 
@@ -181,18 +230,18 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
 
     await supabase.from('transactions').insert([
       {
-        userEmail: sender.email,
+        useremail: sender.email,
         name: `Transfer to ${toEmail}`,
-        dateTime: now,
+        datetime: now,
         type: 'debit',
         status: 'successful',
         amount,
         category: 'Transfer'
       },
       {
-        userEmail: recipient.email,
+        useremail: recipient.email,
         name: `Transfer from ${sender.email}`,
-        dateTime: now,
+        datetime: now,
         type: 'credit',
         status: 'successful',
         amount,
@@ -216,26 +265,26 @@ app.post('/api/billpay', requireLogin, async (req, res) => {
     .single();
 
   if (error || !user) return res.status(404).json({ error: 'User not found' });
-  if (pin !== user.transactionPin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
-  if (user.irsHold) return res.status(403).json({ error: 'Account under IRS hold' });
-  if (user.availableBalance < amount) return res.status(400).json({ error: 'Insufficient funds' });
+  if (pin !== user.transactionpin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
+  if (user.irshold) return res.status(403).json({ error: 'Account under IRS hold' });
+  if (user.availablebalance < amount) return res.status(400).json({ error: 'Insufficient funds' });
 
   const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
 
   const { error: updErr } = await supabase
     .from('users')
     .update({
-      availableBalance: user.availableBalance - amount,
-      currentBalance: user.currentBalance - amount
+      availablebalance: user.availablebalance - amount,
+      currentbalance: user.currentbalance - amount
     })
     .eq('email', user.email);
 
   if (updErr) return res.status(500).json({ error: 'Payment failed' });
 
   await supabase.from('transactions').insert({
-    userEmail: user.email,
+    useremail: user.email,
     name: `Bill Payment - ${payee}`,
-    dateTime: now,
+    datetime: now,
     type: 'debit',
     status: 'successful',
     amount,
@@ -252,7 +301,7 @@ app.post('/api/deposit', requireLogin, async (req, res) => {
 
   const { data: user, error } = await supabase
     .from('users')
-    .select('availableBalance, currentBalance')
+    .select('availablebalance, currentbalance')
     .eq('email', req.session.user.email)
     .single();
 
@@ -263,15 +312,15 @@ app.post('/api/deposit', requireLogin, async (req, res) => {
   await supabase
     .from('users')
     .update({
-      availableBalance: user.availableBalance + amount,
-      currentBalance: user.currentBalance + amount
+      availablebalance: user.availablebalance + amount,
+      currentbalance: user.currentbalance + amount
     })
     .eq('email', req.session.user.email);
 
   await supabase.from('transactions').insert({
-    userEmail: req.session.user.email,
+    useremail: req.session.user.email,
     name: `Deposit - ${source}`,
-    dateTime: now,
+    datetime: now,
     type: 'credit',
     status: 'successful',
     amount,
@@ -285,16 +334,16 @@ app.post('/api/deposit', requireLogin, async (req, res) => {
 app.post('/api/card/lock', requireLogin, async (req, res) => {
   const { data: user, error } = await supabase
     .from('users')
-    .select('cardLocked')
+    .select('cardlocked')
     .eq('email', req.session.user.email)
     .single();
 
   if (error || !user) return res.status(404).json({ error: 'User not found' });
 
-  const newLocked = !user.cardLocked;
+  const newLocked = !user.cardlocked;
   await supabase
     .from('users')
-    .update({ cardLocked: newLocked })
+    .update({ cardlocked: newLocked })
     .eq('email', req.session.user.email);
 
   res.json({ locked: newLocked });
@@ -305,17 +354,17 @@ app.post('/api/profile/pin', requireLogin, async (req, res) => {
   const { currentPin, newPin } = req.body;
   const { data: user, error } = await supabase
     .from('users')
-    .select('transactionPin')
+    .select('transactionpin')
     .eq('email', req.session.user.email)
     .single();
 
   if (error || !user) return res.status(404).json({ error: 'User not found' });
-  if (currentPin !== user.transactionPin) return res.status(400).json({ error: 'Incorrect current PIN' });
+  if (currentPin !== user.transactionpin) return res.status(400).json({ error: 'Incorrect current PIN' });
   if (!/^\d{4}$/.test(newPin)) return res.status(400).json({ error: 'Invalid new PIN' });
 
   await supabase
     .from('users')
-    .update({ transactionPin: newPin })
+    .update({ transactionpin: newPin })
     .eq('email', req.session.user.email);
 
   res.json({ message: 'PIN updated' });
@@ -336,7 +385,7 @@ app.post('/api/profile/password', requireLogin, async (req, res) => {
 app.post('/api/profile/card/visibility', requireLogin, async (req, res) => {
   const { data: user, error } = await supabase
     .from('users')
-    .select('showCardDigits')
+    .select('showcarddigits')
     .eq('email', req.session.user.email)
     .single();
 
@@ -344,17 +393,17 @@ app.post('/api/profile/card/visibility', requireLogin, async (req, res) => {
 
   await supabase
     .from('users')
-    .update({ showCardDigits: !user.showCardDigits })
+    .update({ showcarddigits: !user.showcarddigits })
     .eq('email', req.session.user.email);
 
-  res.json({ showCardDigits: !user.showCardDigits });
+  res.json({ showCardDigits: !user.showcarddigits });
 });
 
 app.post('/api/profile/darkmode', requireLogin, async (req, res) => {
   const { darkMode } = req.body;
   await supabase
     .from('users')
-    .update({ darkMode })
+    .update({ darkmode: darkMode })
     .eq('email', req.session.user.email);
 
   res.json({ darkMode });
@@ -369,28 +418,17 @@ app.get('/api/bankinfo', async (req, res) => {
     .single();
 
   if (error) return res.status(500).json({ error: 'Could not fetch bank info' });
-  res.json(data);
+  res.json(toCamelCaseBankInfo(data));
 });
 
 // ==================== ADMIN ROUTES ====================
 app.get('/api/admin/users', requireAdmin, async (req, res) => {
   const { data, error } = await supabase
     .from('users')
-    .select('id, email, name, phone, accountNumber, routingNumber, approved, suspended, irsHold, availableBalance, currentBalance, cardLocked, cardLastFour, cardExpiry, cardCVV');
+    .select('*');
 
   if (error) return res.status(500).json({ error: 'Database error' });
-  res.json(data);
-});
-
-app.get('/api/admin/user/:id', requireAdmin, async (req, res) => {
-  const { data, error } = await supabase
-    .from('users')
-    .select('*')
-    .eq('id', req.params.id)
-    .single();
-
-  if (error || !data) return res.status(404).json({ error: 'User not found' });
-  res.json(data);
+  res.json(data.map(toCamelCaseUser));
 });
 
 app.post('/api/admin/toggle-suspend', requireAdmin, async (req, res) => {
@@ -415,7 +453,7 @@ app.post('/api/admin/toggle-irs', requireAdmin, async (req, res) => {
   const { id } = req.body;
   const { data: user, error } = await supabase
     .from('users')
-    .select('irsHold')
+    .select('irshold')
     .eq('id', id)
     .single();
 
@@ -423,7 +461,7 @@ app.post('/api/admin/toggle-irs', requireAdmin, async (req, res) => {
 
   await supabase
     .from('users')
-    .update({ irsHold: !user.irsHold })
+    .update({ irshold: !user.irshold })
     .eq('id', id);
 
   res.json({ success: true });
@@ -439,8 +477,8 @@ app.post('/api/admin/delete-user', requireAdmin, async (req, res) => {
 
   if (error || !user) return res.status(404).json({ error: 'User not found' });
 
-  await supabase.from('transactions').delete().eq('userEmail', user.email);
-  await supabase.from('payees').delete().eq('userEmail', user.email);
+  await supabase.from('transactions').delete().eq('useremail', user.email);
+  await supabase.from('payees').delete().eq('useremail', user.email);
   await supabase.from('users').delete().eq('id', id);
 
   res.json({ success: true });
@@ -477,24 +515,35 @@ app.post('/api/admin/create-user', requireAdmin, async (req, res) => {
   const userPhone = phone || `(${Math.floor(200)+900}) ${Math.floor(100)+900}-${Math.floor(1000)+9000}`;
 
   const { error } = await supabase.from('users').insert({
-    id, email, password, name, phone: userPhone, accountNumber: accNum, routingNumber,
-    availableBalance: initialBalance, currentBalance: initialBalance,
-    cardFull, cardLastFour, cardExpiry: expiry, cardCVV: cvv,
-    approved: true, suspended: false
+    id, email, password, name,
+    phone: userPhone,
+    accountnumber: accNum,
+    routingnumber: routingNumber,
+    availablebalance: initialBalance,
+    currentbalance: initialBalance,
+    cardfull: cardFull,
+    cardlastfour: cardLastFour,
+    cardexpiry: expiry,
+    cardcvv: cvv,
+    approved: true,
+    suspended: false
   });
 
   if (error) {
     console.error('Create user failed:', error);
     return res.status(500).json({ error: error.message });
   }
-  res.json({ success: true, message: 'User created' });
+  res.json({ success: true });
 });
 
 app.post('/api/admin/update-balance', requireAdmin, async (req, res) => {
   const { id, availableBalance, currentBalance } = req.body;
   await supabase
     .from('users')
-    .update({ availableBalance, currentBalance })
+    .update({
+      availablebalance: availableBalance,
+      currentbalance: currentBalance
+    })
     .eq('id', id);
   res.json({ success: true });
 });
@@ -507,8 +556,8 @@ app.post('/api/admin/update-user', requireAdmin, async (req, res) => {
   if (name) updates.name = name;
   if (email) updates.email = email;
   if (phone) updates.phone = phone;
-  if (accountNumber) updates.accountNumber = accountNumber;
-  if (routingNumber) updates.routingNumber = routingNumber;
+  if (accountNumber) updates.accountnumber = accountNumber;
+  if (routingNumber) updates.routingnumber = routingNumber;
 
   const { error } = await supabase
     .from('users')
@@ -523,7 +572,7 @@ app.post('/api/admin/update-contact', requireAdmin, async (req, res) => {
   const { supportEmail, supportPhone } = req.body;
   await supabase
     .from('bank_info')
-    .update({ supportEmail, supportPhone })
+    .update({ supportemail: supportEmail, supportphone: supportPhone })
     .eq('id', 1);
   res.json({ success: true });
 });
@@ -538,14 +587,13 @@ app.get('/api/admin/transactions', requireAdmin, async (req, res) => {
   const { data, error } = await supabase
     .from('transactions')
     .select('*, users!inner(email)')
-    .order('dateTime', { ascending: false });
+    .order('datetime', { ascending: false });
 
   if (error) return res.status(500).json({ error: 'Database error' });
 
   const txs = data.map(tx => ({
-    ...tx,
-    userEmail: tx.users ? tx.users.email : tx.userEmail,
-    users: undefined
+    ...toCamelCaseTransaction(tx),
+    userEmail: tx.users ? tx.users.email : tx.useremail
   }));
   res.json(txs);
 });
