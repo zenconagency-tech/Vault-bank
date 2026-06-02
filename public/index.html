@@ -243,29 +243,32 @@
     }
 
     // Render
-    function renderApp() {
-      const app = document.getElementById('app');
-      if (currentUser && currentUser.darkMode) {
-        document.documentElement.classList.add('dark');
-      } else {
-        document.documentElement.classList.remove('dark');
-      }
-      if (!currentUser) {
-        app.innerHTML = renderLoginPage();
-        attachLoginListeners();
-      } else if (currentUser.isAdmin) {
-        app.innerHTML = renderAdminPanel();
-        // admin listeners attached inside
-      } else {
-        if (currentView === 'profile') {
-          app.innerHTML = renderProfilePage();
-          attachProfileListeners();
-        } else {
-          app.innerHTML = renderUserDashboard();
-          attachDashboardListeners();
-        }
-      }
+async function renderApp() {
+  const app = document.getElementById('app');
+  if (currentUser && currentUser.darkMode) {
+    document.documentElement.classList.add('dark');
+  } else {
+    document.documentElement.classList.remove('dark');
+  }
+
+  if (!currentUser) {
+    app.innerHTML = renderLoginPage();
+    attachLoginListeners();
+  } else if (currentUser.isAdmin) {
+   
+    app.innerHTML = await renderAdminPanel();
+   
+  } else {
+
+    if (currentView === 'profile') {
+      app.innerHTML = renderProfilePage();
+      attachProfileListeners();
+    } else {
+      app.innerHTML = renderUserDashboard();
+      attachDashboardListeners();
     }
+  }
+}
 
     // ==================== LOGIN PAGE ====================
     function renderLoginPage() {
