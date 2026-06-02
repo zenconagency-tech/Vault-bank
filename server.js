@@ -1,3 +1,8 @@
+// ----
+const WebSocket = require('ws');
+global.WebSocket = WebSocket;
+
+//----
 const express = require('express');
 const session = require('express-session');
 const { createClient } = require('@supabase/supabase-js');
