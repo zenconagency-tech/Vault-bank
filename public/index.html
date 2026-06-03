@@ -91,7 +91,7 @@
     let balanceVisible = true;
     let activeModal = null;
     let isAdminLoginMode = false;
-    let currentView = 'dashboard'; // 'dashboard' or 'profile'
+    let currentView = 'dashboard';
     let supportEmail = 'support@vaultbank.com';
     let supportPhone = '1-800-555-0199';
 
@@ -174,7 +174,7 @@
       return data;
     }
 
-    // Global IRS toggle (called from admin panel inline onclick)
+    // Global IRS toggle
     async function toggleIRS(uid) {
       if (!(await ensureAdmin())) return;
       try {
@@ -263,7 +263,7 @@
           if (err.message === 'Incorrect Transaction PIN') {
             document.getElementById('pinError').textContent = 'Incorrect Transaction PIN.';
             document.getElementById('pinError').classList.remove('hidden');
-          } else if (err.message === 'Account under IRS hold') {
+          } else if (err.message.includes('regulatory review')) {
             document.getElementById('modalBody').innerHTML = `
               <div class="text-center py-4">
                 <p class="text-red-600 font-bold text-lg mb-2">⚠️ Transfer Blocked</p>
@@ -454,12 +454,249 @@
       }
     }
 
-    // Transfer, Deposit, Bill Pay, Card Lock, Transactions (same as before – included for completeness)
-    function openTransferSendModal() { /* ... full implementation ... */ }
-    function openDepositModal() { /* ... full implementation ... */ }
-    function openPayBillsModal() { /* ... full implementation ... */ }
-    async function toggleCardLock() { /* ... */ }
-    function showAllTransactions() { /* ... */ }
+    // ==================== TRANSFER & SEND ====================
+    function openTransferSendModal() {
+      let activeTab = 'internal';
+      const bodyHTML = `
+        <div class="flex gap-2 mb-4 flex-wrap">
+          <button class="tab-btn active" data-tab="internal">🔄 Internal</button>
+          <button class="tab-btn" data-tab="external">🏦 External</button>
+          <button class="tab-btn" data-tab="zelle">⚡ Zelle/P2P</button>
+        </div>
+        <div id="transferTabContent">
+          <div id="tabInternal" class="space-y-3">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Transfer to another Vault Bank user</p>
+            <input type="text" id="intRecipientEmail" class="input-field" placeholder="Recipient Email">
+            <input type="number" id="intAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
+            <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
+          </div>
+          <div id="tabExternal" class="space-y-3 hidden">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Send to an external bank account</p>
+            <input type="text" id="extFullName" class="input-field" placeholder="Recipient Full Name">
+            <input type="text" id="extBankName" class="input-field" placeholder="Bank Name">
+            <input type="text" id="extAccountNum" class="input-field" placeholder="Account Number">
+            <input type="text" id="extRoutingNum" class="input-field" placeholder="Routing Number (ABA)">
+            <select id="extAccountType" class="input-field"><option value="Checking">Checking</option><option value="Savings">Savings</option></select>
+            <input type="number" id="extAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
+            <input type="text" id="extMemo" class="input-field" placeholder="Memo (optional)">
+            <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
+          </div>
+          <div id="tabZelle" class="space-y-3 hidden">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Send via email or phone (must be registered user)</p>
+            <input type="text" id="zelleRecipient" class="input-field" placeholder="Email or Phone">
+            <input type="number" id="zelleAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
+            <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
+          </div>
+        </div>`;
+      openModal('💸 Transfer & Send Money', bodyHTML, () => false, 'Send Now', 'large');
+
+      setTimeout(() => {
+        const tabs = document.querySelectorAll('.tab-btn');
+        const tabContents = { internal: document.getElementById('tabInternal'), external: document.getElementById('tabExternal'), zelle: document.getElementById('tabZelle') };
+        tabs.forEach(btn => {
+          btn.onclick = () => {
+            activeTab = btn.dataset.tab;
+            tabs.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            Object.keys(tabContents).forEach(k => tabContents[k].classList.add('hidden'));
+            tabContents[activeTab].classList.remove('hidden');
+          };
+        });
+
+        document.getElementById('modalSaveBtn').onclick = () => {
+          let amount = 0, description = '', extra = {};
+          if (activeTab === 'internal') {
+            amount = parseFloat(document.getElementById('intAmount').value);
+            const email = document.getElementById('intRecipientEmail').value.trim();
+            if (!email) { alert('Enter recipient email.'); return; }
+            if (email === currentUser.email) { alert('Cannot transfer to yourself.'); return; }
+            extra.toEmail = email;
+            description = `Transfer to ${email}`;
+            extra.external = false;
+          } else if (activeTab === 'external') {
+            amount = parseFloat(document.getElementById('extAmount').value);
+            const fullName = document.getElementById('extFullName').value.trim();
+            const bankName = document.getElementById('extBankName').value.trim();
+            const acctNum = document.getElementById('extAccountNum').value.trim();
+            const routNum = document.getElementById('extRoutingNum').value.trim();
+            if (!fullName || !bankName || !acctNum || !routNum) { alert('Fill all required fields.'); return; }
+            const memo = document.getElementById('extMemo').value.trim();
+            const accountType = document.getElementById('extAccountType').value;
+            extra.external = true;
+            extra.externalDetails = { fullName, bankName, accountNumber: acctNum, routingNumber: routNum, memo, accountType };
+            description = `External Transfer to ${fullName}`;
+          } else if (activeTab === 'zelle') {
+            amount = parseFloat(document.getElementById('zelleAmount').value);
+            const recipient = document.getElementById('zelleRecipient').value.trim();
+            if (!recipient) { alert('Enter email/phone.'); return; }
+            api('/api/user/lookup?email=' + encodeURIComponent(recipient) + '&phone=' + encodeURIComponent(recipient))
+              .then(resp => {
+                extra.toEmail = resp.email;
+                description = `Zelle to ${recipient}`;
+                extra.external = false;
+                proceed();
+              })
+              .catch(() => {
+                alert('Recipient not found in Vault Bank.');
+              });
+            return;
+          }
+          if (isNaN(amount) || amount <= 0) { alert('Enter a valid amount.'); return; }
+          if (amount > currentUser.availableBalance) { alert('Insufficient funds.'); return; }
+          proceed();
+
+          function proceed() {
+            closeModal();
+            promptTransactionPIN(amount, description, 'transfer', extra);
+          }
+        };
+      }, 100);
+    }
+
+    // ==================== DEPOSIT MODAL ====================
+    function openDepositModal() {
+      let activeTab = 'check';
+      const bodyHTML = `
+        <div class="flex gap-2 mb-4 flex-wrap">
+          <button class="tab-btn active" data-tab="check">📱 Mobile Check</button>
+          <button class="tab-btn" data-tab="wire">🏦 Wire Transfer</button>
+          <button class="tab-btn" data-tab="debit">💳 Debit Card</button>
+        </div>
+        <div id="depositTabContent">
+          <div id="tabCheck" class="space-y-3">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Upload or capture a photo of your check (front & back).</p>
+            <div class="border-2 border-dashed border-gray-300 dark:border-gray-500 rounded-xl p-6 text-center">
+              <label class="cursor-pointer block">
+                <span class="text-4xl">📷</span>
+                <p class="font-semibold mt-2 text-gray-900 dark:text-gray-200">Tap to Capture or Choose File</p>
+                <p class="text-xs text-gray-500">Front & Back of endorsed check</p>
+                <input type="file" id="checkFileInput" accept="image/*" capture="environment" class="hidden" multiple>
+              </label>
+              <div id="checkPreview" class="flex gap-2 justify-center mt-3"></div>
+            </div>
+            <input type="number" id="checkAmount" class="input-field" placeholder="Check Amount" step="0.01" min="0.01">
+          </div>
+          <div id="tabWire" class="space-y-3 hidden">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Provide these details to the sender for wire transfers</p>
+            <div class="bg-gray-50 dark:bg-gray-700 p-4 rounded-xl space-y-2">
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Account Holder</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.name}</span></div>
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Account Number</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.accountNumber}</span></div>
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Routing Number</span><span class="font-semibold text-gray-900 dark:text-gray-200">${currentUser.routingNumber}</span></div>
+              <div class="flex justify-between"><span class="text-xs text-gray-500">Bank</span><span class="font-semibold text-gray-900 dark:text-gray-200">Vault Bank NA</span></div>
+            </div>
+            <input type="number" id="wireAmount" class="input-field" placeholder="Expected Amount" step="0.01" min="0.01">
+          </div>
+          <div id="tabDebit" class="space-y-3 hidden">
+            <p class="text-sm text-gray-600 dark:text-gray-300">Add funds using your debit card</p>
+            <input type="text" class="input-field" placeholder="Card Number" value="•••• •••• •••• ${currentUser.cardLastFour}">
+            <div class="grid grid-cols-2 gap-3"><input type="text" class="input-field" placeholder="MM/YY" value="${currentUser.cardExpiry}"><input type="text" class="input-field" placeholder="CVV"></div>
+            <input type="number" id="debitAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
+          </div>
+        </div>`;
+      openModal('📥 Deposit Funds', bodyHTML, () => {
+        let amount = 0, source = '';
+        if (activeTab === 'check') { amount = parseFloat(document.getElementById('checkAmount').value); source = 'Mobile Check'; }
+        else if (activeTab === 'wire') { amount = parseFloat(document.getElementById('wireAmount').value); source = 'Wire Transfer'; }
+        else { amount = parseFloat(document.getElementById('debitAmount').value); source = 'Debit Card'; }
+        if (isNaN(amount) || amount <= 0) { alert('Enter a valid amount.'); return false; }
+
+        api('/api/deposit', 'POST', { amount, source }).then(() => {
+          fetchUser().then(() => {
+            renderApp();
+            showToast(`✅ Deposit: ${formatUSD(amount)} added!`);
+          });
+        }).catch(e => alert(e.message));
+        return true;
+      }, 'Confirm Deposit', 'large');
+
+      setTimeout(() => {
+        const tabs = document.querySelectorAll('.tab-btn[data-tab]');
+        const tabContents = { check: document.getElementById('tabCheck'), wire: document.getElementById('tabWire'), debit: document.getElementById('tabDebit') };
+        tabs.forEach(btn => {
+          btn.onclick = () => {
+            activeTab = btn.dataset.tab;
+            tabs.forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            Object.keys(tabContents).forEach(k => tabContents[k].classList.add('hidden'));
+            tabContents[activeTab].classList.remove('hidden');
+          };
+        });
+        const fileInput = document.getElementById('checkFileInput');
+        const previewDiv = document.getElementById('checkPreview');
+        if (fileInput) {
+          fileInput.onchange = () => {
+            previewDiv.innerHTML = '';
+            for (const file of fileInput.files) {
+              const reader = new FileReader();
+              reader.onload = (e) => { previewDiv.innerHTML += `<img src="${e.target.result}" class="h-16 rounded border"/>`; };
+              reader.readAsDataURL(file);
+            }
+          };
+        }
+      }, 100);
+    }
+
+    // ==================== BILL PAY ====================
+    function openPayBillsModal() {
+      const billers = [
+        { name: 'Electricity', icon: '⚡', desc: 'Power & Electric Bills', cat: 'Electricity' },
+        { name: 'Phone & Internet', icon: '📱', desc: 'Mobile, Data & ISP', cat: 'Phone & Internet' },
+        { name: 'Water/Utilities', icon: '💧', desc: 'Water, Sewage, Trash', cat: 'Water/Utilities' },
+        { name: 'Betting & Gaming', icon: '🎰', desc: 'Sports Betting & Casino', cat: 'Betting' },
+      ];
+      const billerGrid = billers.map(b => `
+        <div class="biller-card" data-biller="${b.name}">
+          <div class="text-3xl mb-2">${b.icon}</div>
+          <div class="font-semibold text-sm text-gray-900 dark:text-gray-200">${b.name}</div>
+          <div class="text-xs text-gray-500 dark:text-gray-400">${b.desc}</div>
+        </div>`).join('');
+      const bodyHTML = `
+        <p class="text-sm text-gray-600 dark:text-gray-300 mb-4">Select a biller to make a payment</p>
+        <div class="grid grid-cols-2 gap-3 mb-4">${billerGrid}</div>
+        <div id="billerForm" class="space-y-3 hidden border-t pt-4 dark:border-gray-600">
+          <h4 class="font-semibold text-gray-900 dark:text-gray-200" id="billerFormTitle"></h4>
+          <input type="text" id="billerAccountNum" class="input-field" placeholder="Account / Meter Number">
+          <input type="number" id="billerAmount" class="input-field" placeholder="Amount" step="0.01" min="0.01">
+          <p class="text-xs text-gray-500">Available: ${formatUSD(currentUser.availableBalance)}</p>
+          <button class="btn-primary w-full" id="payBillerBtn">Pay Now</button>
+        </div>`;
+      openModal('🧾 Pay Bills', bodyHTML, null, '', 'large');
+
+      let selectedBiller = null;
+      setTimeout(() => {
+        document.querySelectorAll('.biller-card').forEach(card => {
+          card.onclick = () => {
+            selectedBiller = card.dataset.biller;
+            document.getElementById('billerForm').classList.remove('hidden');
+            document.getElementById('billerFormTitle').textContent = `Pay ${selectedBiller}`;
+            document.getElementById('billerAccountNum').value = '';
+            document.getElementById('billerAmount').value = '';
+          };
+        });
+        document.getElementById('payBillerBtn').onclick = () => {
+          const acct = document.getElementById('billerAccountNum').value.trim();
+          const amount = parseFloat(document.getElementById('billerAmount').value);
+          if (!acct) { alert('Enter account number.'); return; }
+          if (isNaN(amount) || amount <= 0) { alert('Enter a valid amount.'); return; }
+          if (amount > currentUser.availableBalance) { alert('Insufficient funds.'); return; }
+          closeModal();
+          promptTransactionPIN(amount, `${selectedBiller} Bill Payment`, 'billpay', { payee: selectedBiller });
+        };
+      }, 100);
+    }
+
+    async function toggleCardLock() {
+      await api('/api/card/lock', 'POST');
+      await fetchUser();
+      renderApp();
+      showToast(`Card ${currentUser.cardLocked ? 'locked 🔒' : 'unlocked 🔓'}`);
+    }
+
+    function showAllTransactions() {
+      const txs = currentUser.transactions;
+      const rows = txs.map(tx => `<tr class="border-b dark:border-gray-600"><td class="py-3"><span class="font-semibold text-gray-900 dark:text-gray-200">${tx.name}</span><div class="text-xs text-gray-500 dark:text-gray-400">${formatDate(tx.dateTime)} · ${tx.category||'General'}</div></td><td class="py-3 text-center">${getStatusBadge(tx.status)}</td><td class="py-3 text-right font-semibold">${getAmountDisplay(tx)}</td></tr>`).join('');
+      openModal('📋 All Transactions', `<div class="overflow-x-auto"><table class="w-full text-sm">${rows}</table></div>`);
+    }
 
     // ==================== PROFILE PAGE ====================
     function renderProfilePage() {
