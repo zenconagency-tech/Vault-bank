@@ -1,12 +1,15 @@
+// 1. WebSocket polyfill (must be first)
 const WebSocket = require('ws');
 global.WebSocket = WebSocket;
 
+// 2. Imports
 const express = require('express');
 const session = require('express-session');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const app = express();
 
+// 3. Supabase client
 const supabaseUrl = process.env.SUPABASE_URL || 'https://lxpbtmtpeixeuxqlxhhz.supabase.co';
 const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4cGJ0bXRwZWl4ZXV4cWx4aGh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzOTE1OTUsImV4cCI6MjA5NTk2NzU5NX0.CSjROUphKSlSmv8yRBpYmID0SkuJGjsoJrWWPeLV_54';
 const supabase = createClient(supabaseUrl, supabaseKey, {
@@ -14,6 +17,7 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false }
 });
 
+// 4. Middleware
 app.use(express.json());
 app.use(session({
   secret: 'vault-real-secret',
@@ -103,12 +107,9 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
     const { data: sender, error: senderErr } = await supabase.from('users').select('email, transactionpin, irshold, availablebalance').eq('email', req.session.user.email).single();
     if (senderErr || !sender) return res.status(404).json({ error: 'Sender account not found' });
     if (pin !== sender.transactionpin) return res.status(403).json({ error: 'Incorrect Transaction PIN' });
-
-    // IRS hold check (also inside RPC, but fast fail is good)
     if (sender.irshold) return res.status(403).json({ error: 'Transfer failed: Account currently under regulatory review.' });
     if (sender.availablebalance < amt) return res.status(400).json({ error: 'Insufficient funds' });
 
-    // External transfer: no receiver email
     if (external) {
       const { data: result, error: rpcError } = await supabase.rpc('process_transfer', {
         p_sender_email: req.session.user.email,
@@ -121,7 +122,6 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
       return res.json({ message: 'External transfer successful' });
     }
 
-    // Internal transfer
     if (!toEmail) return res.status(400).json({ error: 'Missing required field: toEmail for internal transfer' });
 
     const { data: result, error: rpcError } = await supabase.rpc('process_transfer', {
@@ -312,15 +312,34 @@ app.post('/api/admin/change-password', requireAdmin, (req, res) => {
   res.json({ success: true });
 });
 
+// ---------- FIXED: admin/transactions route ----------
 app.get('/api/admin/transactions', requireAdmin, async (req, res) => {
-  const { data } = await supabase.from('transactions').select('*, users!inner(email)').order('datetime', { ascending: false });
- 
-const txs = (data || []).map(tx => ({
-    ...toCamelCaseTransaction(tx),
-    userEmail: tx.users ? tx.users.email : tx.useremail 
-}));
+  try {
+    const { data, error } = await supabase
+      .from('transactions')
+      .select('*, users!inner(email)')
+      .order('datetime', { ascending: false });
 
+    if (error) {
+      console.error('Supabase transactions error:', error);
+      return res.status(500).json({ error: 'Database error fetching transactions' });
+    }
 
+    // Safely map – (data || []) prevents crash on null
+    const txs = (data || []).map(tx => ({
+      ...toCamelCaseTransaction(tx),
+      userEmail: tx.users ? tx.users.email : tx.useremail
+    }));
+
+    res.json(txs);
+  } catch (err) {
+    console.error('Unexpected error in admin/transactions:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// Fallback
 app.get('/*', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`Vault Bank server on port ${PORT}`));
