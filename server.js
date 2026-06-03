@@ -312,24 +312,43 @@ app.post('/api/admin/change-password', requireAdmin, (req, res) => {
   res.json({ success: true });
 });
 
-// ---------- FIXED: admin/transactions route ----------
+// ---------- FIXED: admin/transactions route (manual join, no foreign key needed) ----------
 app.get('/api/admin/transactions', requireAdmin, async (req, res) => {
   try {
-    const { data, error } = await supabase
+    // Fetch all transactions
+    const { data: transactions, error: txErr } = await supabase
       .from('transactions')
-      .select('*, users!inner(email)')
+      .select('*')
       .order('datetime', { ascending: false });
 
-    if (error) {
-      console.error('Supabase transactions error:', error);
+    if (txErr) {
+      console.error('Supabase transactions error:', txErr);
       return res.status(500).json({ error: 'Database error fetching transactions' });
     }
 
-    // Safely map – (data || []) prevents crash on null
-    const txs = (data || []).map(tx => ({
-      ...toCamelCaseTransaction(tx),
-      userEmail: tx.users ? tx.users.email : tx.useremail
-    }));
+    // Fetch all users (only needed fields)
+    const { data: users, error: userErr } = await supabase
+      .from('users')
+      .select('email, name');
+
+    if (userErr) {
+      console.error('Supabase users error:', userErr);
+      return res.status(500).json({ error: 'Database error fetching users' });
+    }
+
+    // Build lookup map
+    const userMap = {};
+    (users || []).forEach(u => { userMap[u.email] = u; });
+
+    // Merge user name into each transaction
+    const txs = (transactions || []).map(tx => {
+      const user = userMap[tx.useremail] || {};
+      return {
+        ...toCamelCaseTransaction(tx),
+        userEmail: tx.useremail,
+        userName: user.name || null
+      };
+    });
 
     res.json(txs);
   } catch (err) {
