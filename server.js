@@ -314,9 +314,12 @@ app.post('/api/admin/change-password', requireAdmin, (req, res) => {
 
 app.get('/api/admin/transactions', requireAdmin, async (req, res) => {
   const { data } = await supabase.from('transactions').select('*, users!inner(email)').order('datetime', { ascending: false });
-  const txs = data.map(tx => ({ ...toCamelCaseTransaction(tx), userEmail: tx.users ? tx.users.email : tx.useremail }));
-  res.json(txs);
-});
+ 
+const txs = (data || []).map(tx => ({
+    ...toCamelCaseTransaction(tx),
+    userEmail: tx.users ? tx.users.email : tx.useremail 
+}));
+
 
 app.get('/*', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
 const PORT = process.env.PORT || 3000;
