@@ -129,7 +129,7 @@
       setTimeout(() => toast.remove(), 2500);
     }
 
-    // API helper (NOW WITH SESSION COOKIE)
+    // API helper (sends session cookie, handles HTML responses gracefully)
     async function api(url, method = 'GET', body = null) {
       const opts = { 
         method, 
@@ -138,9 +138,31 @@
       };
       if (body) opts.body = JSON.stringify(body);
       const res = await fetch(url, opts);
+      const contentType = res.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        // Server returned HTML – session is lost
+        throw new Error('SESSION_LOST');
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Request failed');
       return data;
+    }
+
+    // Re-authenticate admin if session lost
+    async function ensureAdmin() {
+      try {
+        const resp = await fetch('/api/user', { credentials: 'include' });
+        if (!resp.ok) throw new Error('Not logged in');
+        const data = await resp.json();
+        if (!data.isAdmin) throw new Error('Not admin');
+        return true;
+      } catch (e) {
+        // Session lost – redirect to login
+        currentUser = null;
+        renderApp();
+        showToast('Admin session expired. Please log in again.');
+        return false;
+      }
     }
 
     async function fetchUser() {
@@ -157,10 +179,16 @@
 
     // Global IRS toggle (called from admin panel inline onclick)
     async function toggleIRS(uid) {
+      if (!(await ensureAdmin())) return;
       try {
         await api('/api/admin/toggle-irs', 'POST', { id: uid });
         renderApp();
+        showToast('IRS hold updated.');
       } catch (e) {
+        if (e.message === 'SESSION_LOST') {
+          // ensureAdmin already handled redirect
+          return;
+        }
         showToast('Error: ' + e.message);
       }
     }
@@ -248,6 +276,10 @@
                 <p class="text-gray-700 dark:text-gray-300">This account is under IRS review. Please contact the IRS for more information.</p>
                 <button class="btn-primary mt-4 text-sm" onclick="closeModal()">Close</button>
               </div>`;
+          } else if (err.message === 'SESSION_LOST') {
+            closeModal();
+            currentUser = null;
+            renderApp();
           } else {
             alert(err.message);
           }
@@ -804,14 +836,27 @@
     function navigateToProfile() { currentView = 'profile'; renderApp(); }
     function navigateToDashboard() { currentView = 'dashboard'; renderApp(); }
 
-    // ==================== ADMIN PANEL (fixed IRS toggle) ====================
+    // ==================== ADMIN PANEL (with session check before each action) ====================
     async function renderAdminPanel() {
+      if (!currentUser || !currentUser.isAdmin) {
+        // If we somehow lost the admin state, redirect to login
+        currentUser = null;
+        renderApp();
+        return '';
+      }
       let users = [];
       let transactions = [];
       try {
         users = await api('/api/admin/users');
         transactions = await api('/api/admin/transactions');
-      } catch (e) { console.error(e); }
+      } catch (e) {
+        if (e.message === 'SESSION_LOST') {
+          currentUser = null;
+          renderApp();
+          return '';
+        }
+        console.error(e);
+      }
 
       const userRows = users.map(u => `
         <tr class="border-b dark:border-gray-600">
@@ -821,7 +866,6 @@
           <td class="py-3 px-2 text-center">
             <div class="flex items-center justify-center gap-2">
               <span class="text-xs text-gray-700 dark:text-gray-300">IRS:</span>
-              <!-- FIXED: inline onclick calls global toggleIRS -->
               <div class="toggle-switch ${u.irsHold ? 'active' : ''}" onclick="toggleIRS('${u.id}')"></div>
               ${u.approved ? (u.suspended ? '<button class="btn-sm bg-emerald-500 text-white admin-reactivate-btn" data-uid="'+u.id+'">Reactivate</button>' : '<button class="btn-sm btn-danger admin-suspend-btn" data-uid="'+u.id+'">Suspend</button>') : '<button class="btn-sm bg-emerald-500 text-white admin-approve-btn" data-uid="'+u.id+'">Approve</button>'}
               <button class="btn-sm btn-outline admin-edit-user-btn" data-uid="${u.id}">✏️ Edit</button>
@@ -926,16 +970,14 @@
         </div>
       </main>`;
 
-      // Schedule listeners after DOM is set
       setTimeout(() => attachAdminListeners(users), 100);
       return html;
     }
 
     function attachAdminListeners(users) {
-      // (The IRS toggle is now handled by inline onclick – no need for the old listener)
-
       document.querySelectorAll('.admin-suspend-btn, .admin-approve-btn, .admin-reactivate-btn').forEach(b => {
         b.onclick = async () => {
+          if (!(await ensureAdmin())) return;
           await api('/api/admin/toggle-suspend', 'POST', { id: b.dataset.uid });
           renderApp();
         };
@@ -943,6 +985,7 @@
 
       document.querySelectorAll('.admin-delete-btn').forEach(b => {
         b.onclick = async () => {
+          if (!(await ensureAdmin())) return;
           if (confirm('Delete this user?')) {
             await api('/api/admin/delete-user', 'POST', { id: b.dataset.uid });
             renderApp();
@@ -952,6 +995,7 @@
 
       document.querySelectorAll('.admin-edit-user-btn').forEach(b => {
         b.onclick = async () => {
+          if (!(await ensureAdmin())) return;
           const uid = b.dataset.uid;
           const user = users.find(u => u.id === uid);
           if (!user) return;
@@ -973,13 +1017,14 @@
               await api('/api/admin/update-user', 'POST', { id: uid, name, email, phone, accountNumber, routingNumber });
               renderApp();
               showToast('User updated!');
-            } catch (e) { alert(e.message); }
+            } catch (e) { if (e.message !== 'SESSION_LOST') alert(e.message); }
             return true;
           }, 'Save Changes', 'large');
         };
       });
 
       document.getElementById('createUserBtn').onclick = async () => {
+        if (!(await ensureAdmin())) return;
         const name = document.getElementById('newUserName').value.trim();
         const email = document.getElementById('newUserEmail').value.trim();
         const password = document.getElementById('newUserPassword').value;
@@ -996,6 +1041,7 @@
           showToast('User created!');
           renderApp();
         } catch (e) {
+          if (e.message === 'SESSION_LOST') return;
           errorP.textContent = 'Error: ' + e.message;
           errorP.classList.remove('hidden');
         }
@@ -1003,6 +1049,7 @@
 
       document.querySelectorAll('.update-balance-btn').forEach(b => {
         b.onclick = async () => {
+          if (!(await ensureAdmin())) return;
           const uid = b.dataset.uid;
           const avail = document.querySelector(`.balance-avail[data-uid="${uid}"]`).value;
           const curr = document.querySelector(`.balance-curr[data-uid="${uid}"]`).value;
@@ -1013,6 +1060,7 @@
       });
 
       document.getElementById('addTxBtn').onclick = async () => {
+        if (!(await ensureAdmin())) return;
         const name = document.getElementById('newTxName').value.trim();
         const dateTime = document.getElementById('newTxDate').value.trim();
         const userEmail = document.getElementById('newTxUser').value;
@@ -1024,6 +1072,7 @@
       };
 
       document.getElementById('updateContactInfoBtn').onclick = async () => {
+        if (!(await ensureAdmin())) return;
         const email = document.getElementById('adminSupportEmail').value.trim();
         const phone = document.getElementById('adminSupportPhone').value.trim();
         await api('/api/admin/update-contact', 'POST', { supportEmail: email, supportPhone: phone });
@@ -1034,12 +1083,13 @@
       };
 
       document.getElementById('updateAdminPassBtn').onclick = async () => {
+        if (!(await ensureAdmin())) return;
         const old = document.getElementById('adminOldPass').value;
         const newPass = document.getElementById('adminNewPass').value;
         try {
           await api('/api/admin/change-password', 'POST', { currentPassword: old, newPassword: newPass });
           showToast('Admin password updated (server mock).');
-        } catch (e) { alert(e.message); }
+        } catch (e) { if (e.message !== 'SESSION_LOST') alert(e.message); }
       };
     }
 
@@ -1054,16 +1104,18 @@
 
     // Initial load
     (async () => {
-      const res = await fetch('/api/user', { credentials: 'include' }).catch(() => null);
-      if (res && res.ok) {
-        const data = await res.json();
-        if (!data.isAdmin) {
-          currentUser = data;
-          try { const info = await api('/api/bankinfo'); supportEmail = info.supportEmail; supportPhone = info.supportPhone; } catch(e) {}
-        } else {
-          currentUser = { isAdmin: true };
+      try {
+        const res = await fetch('/api/user', { credentials: 'include' });
+        if (res.ok) {
+          const data = await res.json();
+          if (!data.isAdmin) {
+            currentUser = data;
+            try { const info = await api('/api/bankinfo'); supportEmail = info.supportEmail; supportPhone = info.supportPhone; } catch(e) {}
+          } else {
+            currentUser = { isAdmin: true };
+          }
         }
-      }
+      } catch (e) {}
       renderApp();
     })();
 
