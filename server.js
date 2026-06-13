@@ -14,30 +14,28 @@ dotenv.config();
 const app = express();
 
 // 3. Supabase client
-const supabaseUrl = process.env.SUPABASE_URL || 'https://lxpbtmtpeixeuxqlxhhz.supabase.co';
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Imx4cGJ0bXRwZWl4ZXV4cWx4aGh6Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODAzOTE1OTUsImV4cCI6MjA5NTk2NzU5NX0.CSjROUphKSlSmv8yRBpYmID0SkuJGjsoJrWWPeLV_54';
-const supabase = createClient(supabaseUrl, supabaseKey, {
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY, {
   realtime: { disabled: true },
   auth: { persistSession: false }
 });
 
 // 4. Email transporter
-const emailTransporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST || 'smtp.gmail.com',
-  port: process.env.SMTP_PORT || 587,
+const smtpConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
+const emailTransporter = smtpConfigured ? nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: parseInt(process.env.SMTP_PORT || '587'),
   secure: false,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS
-  }
-});
+  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
+  connectionTimeout: 5000
+}) : null;
 
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
 async function sendVerificationEmail(email, token, name) {
-  const verifyUrl = `${process.env.APP_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+  if (!emailTransporter) return;
+  const verifyUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
   await emailTransporter.sendMail({
     from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
     to: email,
@@ -52,7 +50,8 @@ async function sendVerificationEmail(email, token, name) {
 }
 
 async function sendPasswordResetEmail(email, token, name) {
-  const resetUrl = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+  if (!emailTransporter) return;
+  const resetUrl = `${process.env.APP_URL}/reset-password?token=${token}`;
   await emailTransporter.sendMail({
     from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
     to: email,
@@ -69,7 +68,8 @@ async function sendPasswordResetEmail(email, token, name) {
 }
 
 async function sendAccountVerificationEmail(email, token, name) {
-  const verifyUrl = `${process.env.APP_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+  if (!emailTransporter) return;
+  const verifyUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
   await emailTransporter.sendMail({
     from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
     to: email,
@@ -86,7 +86,7 @@ async function sendAccountVerificationEmail(email, token, name) {
 // 5. Middleware
 app.use(express.json());
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'vault-real-secret',
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: { maxAge: 3600000 }
@@ -181,7 +181,7 @@ app.post('/api/register', async (req, res) => {
     });
     if (tokenInsertError) { console.error('Token insert error:', tokenInsertError); return res.status(500).json({ error: 'Failed to create verification token' }); }
 
-    await sendAccountVerificationEmail(email, verifyToken, name);
+    try { await sendAccountVerificationEmail(email, verifyToken, name); } catch (e) { console.error('Email send failed (non-blocking):', e.message); }
     res.json({ message: 'Registration successful. Please check your email for verification.', userId: id });
   } catch (err) {
     console.error('Registration error:', err);
@@ -514,4 +514,23 @@ app.get('/api/admin/transactions', requireAdmin, async (req, res) => {
 app.get('/*', (req, res) => { res.sendFile(path.join(__dirname, 'public', 'index.html')); });
 
 const PORT = process.env.PORT || 3000;
+
+// Startup validation
+const checks = [
+  ['SUPABASE_URL', process.env.SUPABASE_URL],
+  ['SUPABASE_SERVICE_KEY or SUPABASE_ANON_KEY', process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_ANON_KEY],
+  ['SESSION_SECRET', process.env.SESSION_SECRET],
+];
+const missing = checks.filter(([, v]) => !v).map(([k]) => k);
+if (missing.length) {
+  console.error('Missing required env vars:', missing.join(', '));
+  process.exit(1);
+}
+if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
+  console.warn('SMTP not configured — verification/reset emails will not be sent');
+}
+if (process.env.APP_URL === 'http://localhost:3000') {
+  console.warn('APP_URL is set to localhost — change it in production for correct email links');
+}
+
 app.listen(PORT, () => console.log(`Vault Bank server on port ${PORT}`));
