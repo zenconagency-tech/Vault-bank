@@ -7,6 +7,10 @@ const express = require('express');
 const session = require('express-session');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
+const dotenv = require('dotenv');
+dotenv.config();
 const app = express();
 
 // 3. Supabase client
@@ -17,10 +21,72 @@ const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: { persistSession: false }
 });
 
-// 4. Middleware
+// 4. Email transporter
+const emailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST || 'smtp.gmail.com',
+  port: process.env.SMTP_PORT || 587,
+  secure: false,
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
+function generateToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+async function sendVerificationEmail(email, token, name) {
+  const verifyUrl = `${process.env.APP_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+  await emailTransporter.sendMail({
+    from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
+    to: email,
+    subject: 'Verify your Vault Bank account',
+    html: `
+      <h1>Welcome to Vault Bank, ${name}!</h1>
+      <p>Please verify your email address by clicking the link below:</p>
+      <a href="${verifyUrl}">${verifyUrl}</a>
+      <p>This link expires in 24 hours.</p>
+    `
+  });
+}
+
+async function sendPasswordResetEmail(email, token, name) {
+  const resetUrl = `${process.env.APP_URL || 'http://localhost:3000'}/reset-password?token=${token}`;
+  await emailTransporter.sendMail({
+    from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
+    to: email,
+    subject: 'Reset your Vault Bank password',
+    html: `
+      <h1>Password Reset Request</h1>
+      <p>Hi ${name},</p>
+      <p>Click the link below to reset your password:</p>
+      <a href="${resetUrl}">${resetUrl}</a>
+      <p>This link expires in 1 hour.</p>
+      <p>If you didn't request this, please ignore this email.</p>
+    `
+  });
+}
+
+async function sendAccountVerificationEmail(email, token, name) {
+  const verifyUrl = `${process.env.APP_URL || 'http://localhost:3000'}/verify-email?token=${token}`;
+  await emailTransporter.sendMail({
+    from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
+    to: email,
+    subject: 'Verify your Vault Bank account',
+    html: `
+      <h1>Welcome to Vault Bank, ${name}!</h1>
+      <p>Please verify your email address by clicking the link below:</p>
+      <a href="${verifyUrl}">${verifyUrl}</a>
+      <p>This link expires in 24 hours.</p>
+    `
+  });
+}
+
+// 5. Middleware
 app.use(express.json());
 app.use(session({
-  secret: 'vault-real-secret',
+  secret: process.env.SESSION_SECRET || 'vault-real-secret',
   resave: false,
   saveUninitialized: false,
   cookie: { maxAge: 3600000 }
@@ -72,6 +138,87 @@ app.post('/api/login', async (req, res) => {
   res.json({ isAdmin: false, email });
 });
 
+app.post('/api/register', async (req, res) => {
+  try {
+    const { name, email, password, phone, kyc } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: 'Missing required fields: name, email, password' });
+    if (!/^\S+@\S+\.\S+$/.test(email)) return res.status(400).json({ error: 'Invalid email format' });
+    if (password.length < 6) return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    if (!kyc || !kyc.dob || !kyc.address || !kyc.idType || !kyc.idNumber) {
+      return res.status(400).json({ error: 'KYC documentation (Date of Birth, Address, ID Type, ID Number) is required' });
+    }
+    if (!kyc.ssn || !/^[0-9]{3}-[0-9]{2}-[0-9]{4}$/.test(kyc.ssn)) {
+      return res.status(400).json({ error: 'Invalid SSN/Tax ID format. Must be XXX-XX-XXXX' });
+    }
+
+    const { data: existing, error: existingErr } = await supabase.from('users').select('id').eq('email', email).single();
+    if (existing) return res.status(409).json({ error: 'Email already registered' });
+
+    const id = 'u' + Date.now().toString(36);
+    const verifyToken = crypto.randomBytes(32).toString('hex');
+    const hashedPassword = password;
+    const accNum = Math.floor(100000000000 + Math.random() * 900000000000).toString();
+    const routingNumber = '0210000' + Math.floor(10 + Math.random() * 90).toString();
+
+    const { error: insertError } = await supabase.from('users').insert({
+      id, email, password: hashedPassword, name, phone,
+      accountnumber: accNum, routingnumber: routingNumber,
+      approved: false, suspended: false, irshold: false,
+      availablebalance: 0, currentbalance: 0,
+      cardlocked: false, cardlastfour: '0000',
+      cardfull: '0000000000000000', cardexpiry: '12/25',
+      cardcvv: '000', transactionpin: '0000',
+      showcarddigits: false, darkmode: false,
+      kyc_data: kyc
+    });
+    if (insertError) { console.error('Insert error:', insertError); return res.status(500).json({ error: 'Registration failed' }); }
+
+    const { error: tokenInsertError } = await supabase.from('email_tokens').insert({
+      user_id: id,
+      token: verifyToken,
+      type: 'verification',
+      expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
+    });
+    if (tokenInsertError) { console.error('Token insert error:', tokenInsertError); return res.status(500).json({ error: 'Failed to create verification token' }); }
+
+    await sendAccountVerificationEmail(email, verifyToken, name);
+    res.json({ message: 'Registration successful. Please check your email for verification.', userId: id });
+  } catch (err) {
+    console.error('Registration error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+app.post('/api/verify-email', async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'Missing verification token' });
+
+    const { data: tokenData, error: tokenErr } = await supabase
+      .from('email_tokens')
+      .select('user_id, expires_at')
+      .eq('token', token)
+      .eq('type', 'verification')
+      .single();
+    if (tokenErr || !tokenData) return res.status(400).json({ error: 'Invalid verification token' });
+
+    const expiresAt = new Date(tokenData.expires_at);
+    if (expiresAt < new Date()) return res.status(400).json({ error: 'Verification token expired' });
+
+    const { error: updateErr } = await supabase
+      .from('users')
+      .update({ approved: true })
+      .eq('id', tokenData.user_id);
+    if (updateErr) return res.status(500).json({ error: 'Failed to verify user' });
+
+    await supabase.from('email_tokens').delete().eq('token', token);
+    res.json({ message: 'Email verified successfully' });
+  } catch (err) {
+    console.error('Verification error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 app.post('/api/logout', (req, res) => { req.session.destroy(); res.json({ message: 'Logged out' }); });
 
 // ==================== USER DATA ====================
@@ -111,14 +258,20 @@ app.post('/api/transfer', requireLogin, async (req, res) => {
     if (sender.availablebalance < amt) return res.status(400).json({ error: 'Insufficient funds' });
 
     if (external) {
-      const { data: result, error: rpcError } = await supabase.rpc('process_transfer', {
-        p_sender_email: req.session.user.email,
-        p_receiver_email: null,
-        p_amount: amt,
-        p_description: description || externalDetails.fullName || 'External Transfer'
+      const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
+      const { error: updateErr } = await supabase.from('users')
+        .update({ availablebalance: sender.availablebalance - amt, currentbalance: sender.availablebalance - amt })
+        .eq('email', req.session.user.email);
+      if (updateErr) return res.status(500).json({ error: 'Failed to process external transfer' });
+      const ed = externalDetails || {};
+      const { error: txErr } = await supabase.from('transactions').insert({
+        useremail: req.session.user.email,
+        name: description || `External Transfer to ${ed.fullName || 'External Account'}`,
+        datetime: now, type: 'debit', status: 'successful', amount: amt,
+        category: 'External Transfer',
+        externaldetails: ed
       });
-      if (rpcError) { console.error('RPC error:', rpcError); return res.status(500).json({ error: 'Transfer processing failed' }); }
-      if (!result.success) return res.status(500).json({ error: result.error || 'Transfer failed' });
+      if (txErr) return res.status(500).json({ error: 'Failed to record transaction' });
       return res.json({ message: 'External transfer successful' });
     }
 
