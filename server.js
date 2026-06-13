@@ -8,7 +8,6 @@ const session = require('express-session');
 const { createClient } = require('@supabase/supabase-js');
 const path = require('path');
 const crypto = require('crypto');
-const nodemailer = require('nodemailer');
 const dotenv = require('dotenv');
 dotenv.config();
 const app = express();
@@ -19,67 +18,63 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
   auth: { persistSession: false }
 });
 
-// 4. Email transporter
-const smtpConfigured = !!(process.env.SMTP_USER && process.env.SMTP_PASS);
-const emailTransporter = smtpConfigured ? nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: parseInt(process.env.SMTP_PORT || '587'),
-  secure: false,
-  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS },
-  connectionTimeout: 5000
-}) : null;
+// 4. Email via Resend API
+const RESEND_API_KEY = process.env.SMTP_PASS || '';
+const EMAIL_FROM = process.env.SMTP_FROM || 'Vault Bank <onboarding@resend.dev>';
+const emailEnabled = !!RESEND_API_KEY;
+
+async function sendEmail({ to, subject, html }) {
+  if (!emailEnabled) return;
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${RESEND_API_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ from: EMAIL_FROM, to, subject, html })
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error('Email send failed:', err);
+  }
+}
 
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
 async function sendVerificationEmail(email, token, name) {
-  if (!emailTransporter) return;
   const verifyUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
-  await emailTransporter.sendMail({
-    from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
+  await sendEmail({
     to: email,
     subject: 'Verify your Vault Bank account',
-    html: `
-      <h1>Welcome to Vault Bank, ${name}!</h1>
+    html: `<h1>Welcome to Vault Bank, ${name}!</h1>
       <p>Please verify your email address by clicking the link below:</p>
       <a href="${verifyUrl}">${verifyUrl}</a>
-      <p>This link expires in 24 hours.</p>
-    `
+      <p>This link expires in 24 hours.</p>`
   });
 }
 
 async function sendPasswordResetEmail(email, token, name) {
-  if (!emailTransporter) return;
   const resetUrl = `${process.env.APP_URL}/reset-password?token=${token}`;
-  await emailTransporter.sendMail({
-    from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
+  await sendEmail({
     to: email,
     subject: 'Reset your Vault Bank password',
-    html: `
-      <h1>Password Reset Request</h1>
+    html: `<h1>Password Reset Request</h1>
       <p>Hi ${name},</p>
       <p>Click the link below to reset your password:</p>
       <a href="${resetUrl}">${resetUrl}</a>
       <p>This link expires in 1 hour.</p>
-      <p>If you didn't request this, please ignore this email.</p>
-    `
+      <p>If you didn't request this, please ignore this email.</p>`
   });
 }
 
 async function sendAccountVerificationEmail(email, token, name) {
-  if (!emailTransporter) return;
   const verifyUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
-  await emailTransporter.sendMail({
-    from: process.env.SMTP_FROM || 'Vault Bank <noreply@vaultbank.com>',
+  await sendEmail({
     to: email,
     subject: 'Verify your Vault Bank account',
-    html: `
-      <h1>Welcome to Vault Bank, ${name}!</h1>
+    html: `<h1>Welcome to Vault Bank, ${name}!</h1>
       <p>Please verify your email address by clicking the link below:</p>
       <a href="${verifyUrl}">${verifyUrl}</a>
-      <p>This link expires in 24 hours.</p>
-    `
+      <p>This link expires in 24 hours.</p>`
   });
 }
 
@@ -382,8 +377,13 @@ app.get('/api/admin/users', requireAdmin, async (req, res) => {
 
 app.post('/api/admin/toggle-suspend', requireAdmin, async (req, res) => {
   const { id } = req.body;
-  const { data: user } = await supabase.from('users').select('suspended').eq('id', id).single();
-  await supabase.from('users').update({ suspended: !user.suspended }).eq('id', id);
+  const { data: user } = await supabase.from('users').select('approved, suspended').eq('id', id).single();
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (!user.approved) {
+    await supabase.from('users').update({ approved: true, suspended: false }).eq('id', id);
+  } else {
+    await supabase.from('users').update({ suspended: !user.suspended }).eq('id', id);
+  }
   res.json({ success: true });
 });
 
@@ -526,8 +526,8 @@ if (missing.length) {
   console.error('Missing required env vars:', missing.join(', '));
   process.exit(1);
 }
-if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-  console.warn('SMTP not configured — verification/reset emails will not be sent');
+if (!process.env.SMTP_PASS) {
+  console.warn('SMTP not configured (SMTP_PASS missing) — verification/reset emails will not be sent');
 }
 if (process.env.APP_URL === 'http://localhost:3000') {
   console.warn('APP_URL is set to localhost — change it in production for correct email links');

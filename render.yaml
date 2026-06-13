@@ -23,16 +23,10 @@ services:
       - key: SESSION_SECRET
         sync: false
 
-      - key: SMTP_HOST
-        value: smtp.resend.com
-      - key: SMTP_PORT
-        value: "587"
-      - key: SMTP_USER
-        value: resend
       - key: SMTP_PASS
         sync: false
       - key: SMTP_FROM
-        value: Vault Bank <noreply@vaultbank.com>
+        value: Vault Bank <onboarding@resend.dev>
 
       - key: APP_URL
         sync: false
