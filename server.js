@@ -40,29 +40,33 @@ function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-async function sendVerificationEmail(email, token, name) {
-  const verifyUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
-  await sendEmail({
-    to: email,
-    subject: 'Verify your Vault Bank account',
-    html: `<h1>Welcome to Vault Bank, ${name}!</h1>
-      <p>Please verify your email address by clicking the link below:</p>
-      <a href="${verifyUrl}">${verifyUrl}</a>
-      <p>This link expires in 24 hours.</p>`
-  });
-}
-
 async function sendPasswordResetEmail(email, token, name) {
   const resetUrl = `${process.env.APP_URL}/reset-password?token=${token}`;
   await sendEmail({
     to: email,
-    subject: 'Reset your Vault Bank password',
-    html: `<h1>Password Reset Request</h1>
-      <p>Hi ${name},</p>
-      <p>Click the link below to reset your password:</p>
-      <a href="${resetUrl}">${resetUrl}</a>
-      <p>This link expires in 1 hour.</p>
-      <p>If you didn't request this, please ignore this email.</p>`
+    subject: 'Reset Your Password — Vault Bank',
+    html: `<table cellpadding="0" cellspacing="0" style="width:100%;max-width:560px;margin:0 auto;font-family:Helvetica,Arial,sans-serif">
+      <tr><td style="background:#1a1a2e;padding:24px 32px;text-align:center;border-radius:12px 12px 0 0">
+        <span style="color:#fff;font-size:24px;font-weight:700">Vault<span style="color:#3b82f6">Bank</span></span>
+      </td></tr>
+      <tr><td style="background:#fff;padding:32px;border:1px solid #e5e7eb">
+        <p style="color:#111;font-size:16px;margin:0 0 16px">Dear ${name},</p>
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 16px">
+          We received a request to reset the password associated with your Vault Bank account. Use the button below to complete the process.
+        </p>
+        <table cellpadding="0" cellspacing="0" style="margin:24px auto">
+          <tr><td style="background:#3b82f6;border-radius:8px;padding:12px 32px">
+            <a href="${resetUrl}" style="color:#fff;font-size:15px;font-weight:600;text-decoration:none;display:inline-block">Reset Password</a>
+          </td></tr>
+        </table>
+        <p style="color:#6b7280;font-size:13px;line-height:1.5;margin:16px 0 0">
+          This link expires in 1 hour. If you did not request a password reset, please ignore this email or contact support.
+        </p>
+      </td></tr>
+      <tr><td style="background:#f9fafb;padding:16px 32px;text-align:center;border-radius:0 0 12px 12px;border:1px solid #e5e7eb;border-top:0">
+        <p style="color:#9ca3af;font-size:11px;margin:0">&copy; 2026 Vault Bank. All rights reserved.</p>
+      </td></tr>
+    </table>`
   });
 }
 
@@ -70,11 +74,29 @@ async function sendAccountVerificationEmail(email, token, name) {
   const verifyUrl = `${process.env.APP_URL}/verify-email?token=${token}`;
   await sendEmail({
     to: email,
-    subject: 'Verify your Vault Bank account',
-    html: `<h1>Welcome to Vault Bank, ${name}!</h1>
-      <p>Please verify your email address by clicking the link below:</p>
-      <a href="${verifyUrl}">${verifyUrl}</a>
-      <p>This link expires in 24 hours.</p>`
+    subject: 'Confirm Your Email Address — Vault Bank',
+    html: `<table cellpadding="0" cellspacing="0" style="width:100%;max-width:560px;margin:0 auto;font-family:Helvetica,Arial,sans-serif">
+      <tr><td style="background:#1a1a2e;padding:24px 32px;text-align:center;border-radius:12px 12px 0 0">
+        <span style="color:#fff;font-size:24px;font-weight:700">Vault<span style="color:#3b82f6">Bank</span></span>
+      </td></tr>
+      <tr><td style="background:#fff;padding:32px;border:1px solid #e5e7eb">
+        <p style="color:#111;font-size:16px;margin:0 0 16px">Dear ${name},</p>
+        <p style="color:#374151;font-size:14px;line-height:1.6;margin:0 0 16px">
+          Thank you for choosing Vault Bank. To activate your account, please confirm your email address by clicking the button below.
+        </p>
+        <table cellpadding="0" cellspacing="0" style="margin:24px auto">
+          <tr><td style="background:#3b82f6;border-radius:8px;padding:12px 32px">
+            <a href="${verifyUrl}" style="color:#fff;font-size:15px;font-weight:600;text-decoration:none;display:inline-block">Confirm Email Address</a>
+          </td></tr>
+        </table>
+        <p style="color:#6b7280;font-size:13px;line-height:1.5;margin:16px 0 0">
+          This link expires in 24 hours. If you did not create a Vault Bank account, please disregard this message.
+        </p>
+      </td></tr>
+      <tr><td style="background:#f9fafb;padding:16px 32px;text-align:center;border-radius:0 0 12px 12px;border:1px solid #e5e7eb;border-top:0">
+        <p style="color:#9ca3af;font-size:11px;margin:0">&copy; 2026 Vault Bank. All rights reserved.</p>
+      </td></tr>
+    </table>`
   });
 }
 
