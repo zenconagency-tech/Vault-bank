@@ -128,7 +128,7 @@ function toCamelCaseUser(dbUser) {
     availableBalance: dbUser.availablebalance, currentBalance: dbUser.currentbalance,
     cardLocked: dbUser.cardlocked, cardLastFour: dbUser.cardlastfour, cardFull: dbUser.cardfull,
     cardExpiry: dbUser.cardexpiry, cardCVV: dbUser.cardcvv, transactionPin: dbUser.transactionpin,
-    showCardDigits: dbUser.showcarddigits, darkMode: dbUser.darkmode
+    showCardDigits: dbUser.showcarddigits, darkMode: dbUser.darkmode, cardName: dbUser.cardname || ''
   };
 }
 function toCamelCaseTransaction(tx) {
@@ -464,14 +464,29 @@ app.post('/api/admin/update-balance', requireAdmin, async (req, res) => {
 });
 
 app.post('/api/admin/update-user', requireAdmin, async (req, res) => {
-  const { id, name, email, phone, accountNumber, routingNumber } = req.body;
+  const { id, name, email, phone, accountNumber, routingNumber, cardFull, cardExpiry, cardName } = req.body;
   const updates = {};
   if (name) updates.name = name;
   if (email) updates.email = email;
   if (phone) updates.phone = phone;
   if (accountNumber) updates.accountnumber = accountNumber;
   if (routingNumber) updates.routingnumber = routingNumber;
-  await supabase.from('users').update(updates).eq('id', id);
+  if (cardFull) {
+    if (!/^\d{16}$/.test(cardFull)) return res.status(400).json({ error: 'Card number must be 16 digits' });
+    updates.cardfull = cardFull;
+    updates.cardlastfour = cardFull.slice(-4);
+  }
+  if (cardExpiry) {
+    if (!/^(0[1-9]|1[0-2])\/\d{2}$/.test(cardExpiry)) return res.status(400).json({ error: 'Expiry must be MM/YY' });
+    updates.cardexpiry = cardExpiry;
+  }
+  if (typeof cardName === 'string') {
+    const cn = cardName.trim();
+    if (cn.length > 40) return res.status(400).json({ error: 'Card name must be 40 characters or less' });
+    updates.cardname = cn || null; // blank = card uses the account holder name
+  }
+  const { error: updErr } = await supabase.from('users').update(updates).eq('id', id);
+  if (updErr) { console.error('update-user error:', updErr); return res.status(500).json({ error: 'Update failed: ' + updErr.message }); }
   res.json({ success: true });
 });
 
