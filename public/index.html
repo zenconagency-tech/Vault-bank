@@ -217,7 +217,28 @@
       activeModal = document.getElementById('activeModal');
       document.body.style.overflow = 'hidden';
     }
-
+<!-- Edit Card Details Modal -->
+<div id="editCardDetailsModal" class="modal-backdrop">
+  <div class="modal">
+    <h3 class="modal-title">Edit Card Details</h3>
+    <form id="editCardDetailsForm" class="form">
+      <input type="hidden" id="editCardDepositId" />
+      <div class="form-group">
+        <label for="editCardName">Card Name</label>
+        <input type="text" id="editCardName" class="input" required />
+      </div>
+      <div class="form-group">
+        <label for="editCardDetails">Card Details</label>
+        <textarea id="editCardDetails" class="input" rows="4" required></textarea>
+      </div>
+      <div class="form-actions" style="margin-top:20px;">
+        <button type="button" id="editCardDetailsCancel" class="btn btn-ghost">Cancel</button>
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+    
     function closeModal() {
       document.getElementById('modalContainer').innerHTML = '';
       activeModal = null;
